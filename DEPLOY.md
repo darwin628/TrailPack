@@ -30,9 +30,20 @@ git push -u origin main
 - SQLite 文件: `/tmp/trailpack.db`
 
 说明：Render Free 实例文件系统是临时的，服务重启后 SQLite 数据可能丢失。
-如果你需要长期保留数据，建议升级付费磁盘或改用托管 Postgres。
 
 部署成功后，会得到一个 `https://xxxx.onrender.com` 链接，其他人可直接访问。
+
+### 4. 开启真正持久化（Render Postgres）
+
+1. 在 Render 创建 `PostgreSQL` 实例。
+2. 打开你的 `Web Service` -> `Environment` -> 添加变量：
+
+- `DATABASE_URL=<Render Postgres Internal Database URL>`
+- `PGSSL=require`
+
+3. 保留原有 `JWT_SECRET`、`NODE_ENV`、`CORS_ORIGIN`。
+4. 点击 `Manual Deploy` 触发重启部署。
+5. 访问 `/api/health`，返回里 `db` 应为 `postgres`，表示已切换到持久化数据库。
 
 ## 方案 B: Docker + 自己的云服务器
 
