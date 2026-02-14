@@ -61,6 +61,7 @@ export default function App() {
   const [lists, setLists] = useState([]);
   const [activeListId, setActiveListId] = useState(0);
   const [items, setItems] = useState([]);
+  const [gears, setGears] = useState([]);
   const [categoryCatalog, setCategoryCatalog] = useState([]);
   const [authChecking, setAuthChecking] = useState(true);
 
@@ -70,6 +71,7 @@ export default function App() {
   const [resetStep, setResetStep] = useState("request");
 
   const [listForm, setListForm] = useState({ name: "" });
+  const [gearQuery, setGearQuery] = useState("");
 
   const [authError, setAuthError] = useState("");
   const [authInfo, setAuthInfo] = useState("");
@@ -112,6 +114,15 @@ export default function App() {
     setCategoryCatalog(data.categories || []);
   }
 
+  async function refreshGears(listId = activeListId, authToken = token) {
+    if (!authToken || !listId) {
+      setGears([]);
+      return;
+    }
+    const data = await api(`/api/gears?listId=${listId}`, {}, authToken);
+    setGears(data.gears || []);
+  }
+
   const totals = useMemo(() => {
     const total = items.reduce((sum, item) => sum + itemTotal(item), 0);
     const base = items
@@ -130,6 +141,17 @@ export default function App() {
       })
       .sort((a, b) => b.weight - a.weight);
   }, [grouped, items.length, totals.total]);
+
+  const filteredGears = useMemo(() => {
+    const q = gearQuery.trim().toLowerCase();
+    if (!q) return gears;
+    return gears.filter((gear) => {
+      return (
+        String(gear.name || "").toLowerCase().includes(q) ||
+        String(gear.category || "").toLowerCase().includes(q)
+      );
+    });
+  }, [gears, gearQuery]);
 
   async function fetchItemsForList(listId, authToken = token) {
     if (!listId) {
@@ -167,8 +189,10 @@ export default function App() {
 
         if (firstId) {
           await fetchItemsForList(firstId, token);
+          await refreshGears(firstId, token);
         } else {
           setItems([]);
+          setGears([]);
         }
       } catch {
         localStorage.removeItem(TOKEN_KEY);
@@ -178,6 +202,7 @@ export default function App() {
         setLists([]);
         setActiveListId(0);
         setItems([]);
+        setGears([]);
         setCategoryCatalog([]);
       } finally {
         setAuthChecking(false);
@@ -309,7 +334,9 @@ export default function App() {
 
       setLists(data.lists || []);
       setListForm({ name: "" });
-      await fetchItemsForList(Number(data.list?.id || 0));
+      const nextId = Number(data.list?.id || 0);
+      await fetchItemsForList(nextId);
+      await refreshGears(nextId);
     } catch (err) {
       setAppError(err.message || "创建清单失败");
     } finally {
@@ -329,9 +356,11 @@ export default function App() {
       const nextId = Number(data.activeListId || data.lists?.[0]?.id || 0);
       if (nextId) {
         await fetchItemsForList(nextId);
+        await refreshGears(nextId);
       } else {
         setActiveListId(0);
         setItems([]);
+        setGears([]);
       }
     } catch (err) {
       setAppError(err.message || "删除清单失败");
@@ -345,6 +374,7 @@ export default function App() {
     setAppError("");
     try {
       await fetchItemsForList(Number(nextId));
+      await refreshGears(Number(nextId));
     } catch (err) {
       setAppError(err.message || "切换清单失败");
     }
@@ -374,6 +404,7 @@ export default function App() {
       );
       setLists(data.lists || []);
       await fetchItemsForList(Number(data.list?.id || 0));
+      await refreshGears(Number(data.list?.id || 0));
     } catch (err) {
       setAppError(err.message || "复制清单失败");
     } finally {
@@ -389,6 +420,7 @@ export default function App() {
     setLists([]);
     setActiveListId(0);
     setItems([]);
+    setGears([]);
     setCategoryCatalog([]);
     setAppError("");
   }
@@ -425,6 +457,7 @@ export default function App() {
       );
       setItems((prev) => [data.item, ...prev]);
       await refreshCategories();
+      await refreshGears();
       setForm((prev) => ({ ...prev, name: "", weight: "", qty: "1" }));
     } catch (err) {
       setAppError(err.message || "添加失败");
@@ -437,6 +470,7 @@ export default function App() {
       await api(`/api/items/${id}`, { method: "DELETE" }, token);
       setItems((prev) => prev.filter((item) => item.id !== id));
       await refreshCategories();
+      await refreshGears();
     } catch (err) {
       setAppError(err.message || "删除失败");
     }
@@ -452,8 +486,28 @@ export default function App() {
       await api(`/api/items?listId=${activeListId}`, { method: "DELETE" }, token);
       setItems([]);
       await refreshCategories();
+      await refreshGears();
     } catch (err) {
       setAppError(err.message || "清空失败");
+    }
+  }
+
+  async function onAddGearToCurrentList(gear) {
+    if (!activeListId) return;
+    setAppError("");
+    try {
+      const data = await api(
+        `/api/gears/${gear.id}/add-to-list`,
+        {
+          method: "POST",
+          body: JSON.stringify({ listId: activeListId, qty: gear.defaultQty }),
+        },
+        token
+      );
+      setItems((prev) => [data.item, ...prev]);
+      await refreshGears();
+    } catch (err) {
+      setAppError(err.message || "加入当前清单失败");
     }
   }
 
@@ -585,6 +639,8 @@ export default function App() {
               <span>总携带重量</span>
               <strong>{formatG(totals.total)}</strong>
             </div>
+          </div>
+          <div className="hero-actions">
             <button type="button" className="ghost" onClick={logout}>退出登录</button>
           </div>
         </header>
@@ -687,6 +743,45 @@ export default function App() {
 
               <button type="submit" disabled={!activeListId}>添加到当前清单</button>
             </form>
+
+            <div className="my-gear-inline">
+              <div className="panel-head">
+                <h2>我的全部装备</h2>
+                <span className="muted">已在当前清单: {gears.filter((g) => g.inCurrentList).length} / {gears.length}</span>
+              </div>
+              <label className="gear-search">
+                搜索装备
+                <input
+                  placeholder="输入名称或分类，例如：睡袋 / 炊具"
+                  value={gearQuery}
+                  onChange={(e) => setGearQuery(e.target.value)}
+                />
+              </label>
+              <div className="gear-list">
+                {!filteredGears.length && <p className="empty">没有匹配装备。</p>}
+                {filteredGears.map((gear) => (
+                  <article className="gear-item" key={gear.id}>
+                    <div>
+                      <p className="item-name">{gear.name}</p>
+                      <p className="item-meta">{gear.category} · {typeLabel(gear.type)} · {gear.defaultQty} x {gear.weight}g</p>
+                    </div>
+                    <div className="gear-item-right">
+                      <span className={`gear-state ${gear.inCurrentList ? "in" : "out"}`}>
+                        {gear.inCurrentList ? "已在当前清单" : "未加入当前清单"}
+                      </span>
+                      <button
+                        type="button"
+                        className="ghost"
+                        onClick={() => onAddGearToCurrentList(gear)}
+                        disabled={gear.inCurrentList || !activeListId}
+                      >
+                        加入
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </div>
           </section>
 
           <section className="right-panel card">

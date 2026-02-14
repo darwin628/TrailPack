@@ -149,6 +149,20 @@ async function createPostgresDb() {
     );
   `);
 
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS gear_library (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      category TEXT NOT NULL,
+      type TEXT NOT NULL,
+      weight INTEGER NOT NULL,
+      default_qty INTEGER NOT NULL DEFAULT 1,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(user_id, name, category, type, weight)
+    );
+  `);
+
   return {
     driver: "postgres",
     close: () => pool.end(),
@@ -228,6 +242,13 @@ async function createPostgresDb() {
         list = inserted.rows[0];
 
         for (const item of defaultSeedItems) {
+          await pool.query(
+            `INSERT INTO gear_library (user_id, name, category, type, weight, default_qty)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT (user_id, name, category, type, weight)
+             DO UPDATE SET default_qty = EXCLUDED.default_qty`,
+            [userId, item.name, item.category, item.type, item.weight, item.qty]
+          );
           await pool.query(
             "INSERT INTO items (user_id, list_id, name, category, type, weight, qty) VALUES ($1, $2, $3, $4, $5, $6, $7)",
             [userId, list.id, item.name, item.category, item.type, item.weight, item.qty]
@@ -332,6 +353,47 @@ async function createPostgresDb() {
       );
       return rows.map((r) => r.category);
     },
+
+    upsertGear: async (userId, gear) => {
+      const { rows } = await pool.query(
+        `INSERT INTO gear_library (user_id, name, category, type, weight, default_qty)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (user_id, name, category, type, weight)
+         DO UPDATE SET default_qty = EXCLUDED.default_qty
+         RETURNING id, name, category, type, weight, default_qty`,
+        [userId, gear.name, gear.category, gear.type, gear.weight, gear.defaultQty]
+      );
+      return rows[0];
+    },
+
+    listGears: async (userId, listId) => {
+      const { rows } = await pool.query(
+        `SELECT
+           g.id, g.name, g.category, g.type, g.weight, g.default_qty AS "defaultQty",
+           EXISTS (
+             SELECT 1 FROM items i
+             WHERE i.user_id = g.user_id
+               AND i.list_id = $2
+               AND i.name = g.name
+               AND i.category = g.category
+               AND i.type = g.type
+               AND i.weight = g.weight
+           ) AS "inCurrentList"
+         FROM gear_library g
+         WHERE g.user_id = $1
+         ORDER BY g.name ASC`,
+        [userId, listId]
+      );
+      return rows;
+    },
+
+    getGearById: async (userId, gearId) => {
+      const { rows } = await pool.query(
+        "SELECT id, name, category, type, weight, default_qty AS \"defaultQty\" FROM gear_library WHERE user_id = $1 AND id = $2 LIMIT 1",
+        [userId, gearId]
+      );
+      return rows[0] || null;
+    },
   };
 }
 
@@ -381,6 +443,19 @@ function createSqliteDb() {
       expires_at DATETIME NOT NULL,
       used_at DATETIME,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS gear_library (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      category TEXT NOT NULL,
+      type TEXT NOT NULL,
+      weight INTEGER NOT NULL,
+      default_qty INTEGER NOT NULL DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(user_id, name, category, type, weight),
       FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
     );
   `);
@@ -456,7 +531,13 @@ function createSqliteDb() {
         const insertSeedItem = sqlite.prepare(
           "INSERT INTO items (user_id, list_id, name, category, type, weight, qty) VALUES (?, ?, ?, ?, ?, ?, ?)"
         );
+        const upsertSeedGear = sqlite.prepare(
+          `INSERT INTO gear_library (user_id, name, category, type, weight, default_qty)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(user_id, name, category, type, weight) DO UPDATE SET default_qty = excluded.default_qty`
+        );
         for (const item of defaultSeedItems) {
+          upsertSeedGear.run(userId, item.name, item.category, item.type, item.weight, item.qty);
           insertSeedItem.run(userId, list.id, item.name, item.category, item.type, item.weight, item.qty);
         }
       }
@@ -549,6 +630,56 @@ function createSqliteDb() {
         )
         .all(userId);
       return rows.map((r) => r.category);
+    },
+
+    upsertGear: async (userId, gear) => {
+      sqlite
+        .prepare(
+          `INSERT INTO gear_library (user_id, name, category, type, weight, default_qty)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(user_id, name, category, type, weight) DO UPDATE SET default_qty = excluded.default_qty`
+        )
+        .run(userId, gear.name, gear.category, gear.type, gear.weight, gear.defaultQty);
+
+      return (
+        sqlite
+          .prepare(
+            "SELECT id, name, category, type, weight, default_qty AS defaultQty FROM gear_library WHERE user_id = ? AND name = ? AND category = ? AND type = ? AND weight = ?"
+          )
+          .get(userId, gear.name, gear.category, gear.type, gear.weight) || null
+      );
+    },
+
+    listGears: async (userId, listId) => {
+      return sqlite
+        .prepare(
+          `SELECT
+             g.id, g.name, g.category, g.type, g.weight, g.default_qty AS defaultQty,
+             EXISTS (
+               SELECT 1 FROM items i
+               WHERE i.user_id = g.user_id
+                 AND i.list_id = ?
+                 AND i.name = g.name
+                 AND i.category = g.category
+                 AND i.type = g.type
+                 AND i.weight = g.weight
+             ) AS inCurrentList
+           FROM gear_library g
+           WHERE g.user_id = ?
+           ORDER BY g.name ASC`
+        )
+        .all(listId, userId)
+        .map((row) => ({ ...row, inCurrentList: Boolean(row.inCurrentList) }));
+    },
+
+    getGearById: async (userId, gearId) => {
+      return (
+        sqlite
+          .prepare(
+            "SELECT id, name, category, type, weight, default_qty AS defaultQty FROM gear_library WHERE user_id = ? AND id = ?"
+          )
+          .get(userId, gearId) || null
+      );
     },
   };
 }
@@ -680,6 +811,75 @@ async function main() {
     }
   });
 
+  app.get("/api/gears", authRequired, async (req, res) => {
+    try {
+      const userId = Number(req.user.sub);
+      const defaultList = await db.ensureDefaultList(userId);
+      const listId = Number(req.query?.listId || defaultList.id);
+      const gears = await db.listGears(userId, listId);
+      return res.json({ gears });
+    } catch {
+      return res.status(500).json({ error: "获取装备库失败" });
+    }
+  });
+
+  app.post("/api/gears", authRequired, async (req, res) => {
+    try {
+      const userId = Number(req.user.sub);
+      const name = String(req.body?.name || "").trim();
+      const category = String(req.body?.category || "").trim();
+      const type = String(req.body?.type || "").trim();
+      const weight = Number(req.body?.weight);
+      const defaultQty = Number(req.body?.defaultQty || 1);
+
+      if (!name || !category || !type) return res.status(400).json({ error: "请填写完整装备信息" });
+      if (!["base", "worn", "consumable"].includes(type)) return res.status(400).json({ error: "装备类型不正确" });
+      if (!Number.isFinite(weight) || weight <= 0 || !Number.isFinite(defaultQty) || defaultQty <= 0) {
+        return res.status(400).json({ error: "重量和数量必须大于 0" });
+      }
+
+      const gear = await db.upsertGear(userId, {
+        name,
+        category,
+        type,
+        weight: Math.round(weight),
+        defaultQty: Math.round(defaultQty),
+      });
+
+      return res.status(201).json({ gear });
+    } catch {
+      return res.status(500).json({ error: "保存我的装备失败" });
+    }
+  });
+
+  app.post("/api/gears/:id/add-to-list", authRequired, async (req, res) => {
+    try {
+      const userId = Number(req.user.sub);
+      const gearId = Number(req.params.id);
+      const listId = Number(req.body?.listId);
+      const qty = Number(req.body?.qty || 0);
+      if (!Number.isInteger(gearId) || gearId <= 0) return res.status(400).json({ error: "无效装备 id" });
+      if (!Number.isInteger(listId) || listId <= 0) return res.status(400).json({ error: "无效清单 id" });
+
+      const list = await db.getPackListById(userId, listId);
+      if (!list) return res.status(404).json({ error: "清单不存在" });
+
+      const gear = await db.getGearById(userId, gearId);
+      if (!gear) return res.status(404).json({ error: "装备不存在" });
+
+      const item = await db.createItem(userId, listId, {
+        name: gear.name,
+        category: gear.category,
+        type: gear.type,
+        weight: gear.weight,
+        qty: Math.max(1, Math.round(qty || gear.defaultQty || 1)),
+      });
+      return res.status(201).json({ item });
+    } catch {
+      return res.status(500).json({ error: "加入清单失败" });
+    }
+  });
+
   app.post("/api/lists", authRequired, async (req, res) => {
     try {
       const userId = Number(req.user.sub);
@@ -771,6 +971,14 @@ async function main() {
 
       const list = await db.getPackListById(userId, listId);
       if (!list) return res.status(404).json({ error: "清单不存在" });
+
+      await db.upsertGear(userId, {
+        name,
+        category,
+        type,
+        weight: Math.round(weight),
+        defaultQty: Math.round(qty),
+      });
 
       const item = await db.createItem(userId, listId, {
         name,
