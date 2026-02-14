@@ -20,6 +20,15 @@ const exposeResetCode = process.env.EXPOSE_RESET_CODE === "true" || process.env.
 const resendApiKey = process.env.RESEND_API_KEY || "";
 const mailFrom = process.env.MAIL_FROM || "";
 const appUrl = process.env.APP_URL || "";
+const defaultListName = "默认行程";
+const defaultSeedItems = [
+  { name: "双人帐篷", category: "睡眠系统", type: "base", weight: 1280, qty: 1 },
+  { name: "羽绒睡袋", category: "睡眠系统", type: "base", weight: 920, qty: 1 },
+  { name: "冲锋衣", category: "衣物", type: "worn", weight: 460, qty: 1 },
+  { name: "炉头+气罐", category: "炊具", type: "base", weight: 380, qty: 1 },
+  { name: "头灯", category: "电子设备", type: "base", weight: 95, qty: 1 },
+  { name: "能量胶", category: "其他", type: "consumable", weight: 45, qty: 6 },
+];
 
 function hashResetCode(code) {
   return crypto.createHash("sha256").update(code).digest("hex");
@@ -67,134 +76,263 @@ async function sendResetCodeEmail(toEmail, resetCode) {
   return { ok: true };
 }
 
-async function createDbClient() {
-  if (databaseUrl) {
-    const pool = new Pool({
-      connectionString: databaseUrl,
-      ssl: process.env.PGSSL === "disable" ? false : { rejectUnauthorized: false },
-    });
+function normalizeEmail(email = "") {
+  return email.trim().toLowerCase();
+}
 
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS users (
-        id BIGSERIAL PRIMARY KEY,
-        email TEXT NOT NULL UNIQUE,
-        password_hash TEXT NOT NULL,
-        created_at TIMESTAMPTZ DEFAULT NOW()
-      );
-    `);
+function signToken(user) {
+  return jwt.sign({ sub: Number(user.id), email: user.email }, jwtSecret, { expiresIn: "7d" });
+}
 
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS items (
-        id BIGSERIAL PRIMARY KEY,
-        user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        name TEXT NOT NULL,
-        category TEXT NOT NULL,
-        type TEXT NOT NULL,
-        weight INTEGER NOT NULL,
-        qty INTEGER NOT NULL,
-        created_at TIMESTAMPTZ DEFAULT NOW()
-      );
-    `);
+function authRequired(req, res, next) {
+  const authHeader = req.headers.authorization || "";
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  if (!token) return res.status(401).json({ error: "未登录" });
 
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS password_resets (
-        id BIGSERIAL PRIMARY KEY,
-        user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        code_hash TEXT NOT NULL,
-        expires_at TIMESTAMPTZ NOT NULL,
-        used_at TIMESTAMPTZ,
-        created_at TIMESTAMPTZ DEFAULT NOW()
-      );
-    `);
-
-    return {
-      driver: "postgres",
-      close: () => pool.end(),
-      getUserByEmail: async (email) => {
-        const { rows } = await pool.query(
-          "SELECT id, email, password_hash FROM users WHERE email = $1 LIMIT 1",
-          [email]
-        );
-        return rows[0] || null;
-      },
-      getUserById: async (id) => {
-        const { rows } = await pool.query("SELECT id, email FROM users WHERE id = $1 LIMIT 1", [id]);
-        return rows[0] || null;
-      },
-      createUser: async (email, passwordHash) => {
-        const { rows } = await pool.query(
-          "INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id, email",
-          [email, passwordHash]
-        );
-        return rows[0];
-      },
-      listItems: async (userId) => {
-        const { rows } = await pool.query(
-          "SELECT id, name, category, type, weight, qty FROM items WHERE user_id = $1 ORDER BY id DESC",
-          [userId]
-        );
-        return rows;
-      },
-      createItem: async (userId, item) => {
-        const { rows } = await pool.query(
-          "INSERT INTO items (user_id, name, category, type, weight, qty) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, name, category, type, weight, qty",
-          [userId, item.name, item.category, item.type, item.weight, item.qty]
-        );
-        return rows[0];
-      },
-      deleteItem: async (id, userId) => {
-        const result = await pool.query("DELETE FROM items WHERE id = $1 AND user_id = $2", [id, userId]);
-        return result.rowCount;
-      },
-      clearItems: async (userId) => {
-        const result = await pool.query("DELETE FROM items WHERE user_id = $1", [userId]);
-        return result.rowCount;
-      },
-      createPasswordReset: async (email) => {
-        const user = await pool.query("SELECT id FROM users WHERE email = $1 LIMIT 1", [email]);
-        if (!user.rows[0]) return null;
-
-        const code = makeResetCode();
-        const codeHash = hashResetCode(code);
-        await pool.query(
-          "INSERT INTO password_resets (user_id, code_hash, expires_at) VALUES ($1, $2, NOW() + INTERVAL '15 minutes')",
-          [user.rows[0].id, codeHash]
-        );
-        return code;
-      },
-      resetPasswordWithCode: async (email, code, passwordHash) => {
-        const userRes = await pool.query(
-          "SELECT id FROM users WHERE email = $1 LIMIT 1",
-          [email]
-        );
-        const user = userRes.rows[0];
-        if (!user) return false;
-
-        const codeHash = hashResetCode(code);
-        const resetRes = await pool.query(
-          "SELECT id FROM password_resets WHERE user_id = $1 AND code_hash = $2 AND used_at IS NULL AND expires_at > NOW() ORDER BY created_at DESC LIMIT 1",
-          [user.id, codeHash]
-        );
-        const reset = resetRes.rows[0];
-        if (!reset) return false;
-
-        const client = await pool.connect();
-        try {
-          await client.query("BEGIN");
-          await client.query("UPDATE users SET password_hash = $1 WHERE id = $2", [passwordHash, user.id]);
-          await client.query("UPDATE password_resets SET used_at = NOW() WHERE user_id = $1 AND used_at IS NULL", [user.id]);
-          await client.query("COMMIT");
-          return true;
-        } catch {
-          await client.query("ROLLBACK");
-          return false;
-        } finally {
-          client.release();
-        }
-      },
-    };
+  try {
+    req.user = jwt.verify(token, jwtSecret);
+    return next();
+  } catch {
+    return res.status(401).json({ error: "登录已过期，请重新登录" });
   }
+}
 
+async function createPostgresDb() {
+  const pool = new Pool({
+    connectionString: databaseUrl,
+    ssl: process.env.PGSSL === "disable" ? false : { rejectUnauthorized: false },
+  });
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id BIGSERIAL PRIMARY KEY,
+      email TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS pack_lists (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      destination TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS items (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      list_id BIGINT,
+      name TEXT NOT NULL,
+      category TEXT NOT NULL,
+      type TEXT NOT NULL,
+      weight INTEGER NOT NULL,
+      qty INTEGER NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+  `);
+
+  await pool.query("ALTER TABLE items ADD COLUMN IF NOT EXISTS list_id BIGINT");
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS password_resets (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      code_hash TEXT NOT NULL,
+      expires_at TIMESTAMPTZ NOT NULL,
+      used_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+  `);
+
+  return {
+    driver: "postgres",
+    close: () => pool.end(),
+
+    getUserByEmail: async (email) => {
+      const { rows } = await pool.query(
+        "SELECT id, email, password_hash FROM users WHERE email = $1 LIMIT 1",
+        [email]
+      );
+      return rows[0] || null;
+    },
+
+    getUserById: async (id) => {
+      const { rows } = await pool.query("SELECT id, email FROM users WHERE id = $1 LIMIT 1", [id]);
+      return rows[0] || null;
+    },
+
+    createUser: async (email, passwordHash) => {
+      const { rows } = await pool.query(
+        "INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id, email",
+        [email, passwordHash]
+      );
+      return rows[0];
+    },
+
+    createPasswordReset: async (email) => {
+      const userRes = await pool.query("SELECT id FROM users WHERE email = $1 LIMIT 1", [email]);
+      const user = userRes.rows[0];
+      if (!user) return null;
+
+      const code = makeResetCode();
+      await pool.query(
+        "INSERT INTO password_resets (user_id, code_hash, expires_at) VALUES ($1, $2, NOW() + INTERVAL '15 minutes')",
+        [user.id, hashResetCode(code)]
+      );
+      return code;
+    },
+
+    resetPasswordWithCode: async (email, code, passwordHash) => {
+      const userRes = await pool.query("SELECT id FROM users WHERE email = $1 LIMIT 1", [email]);
+      const user = userRes.rows[0];
+      if (!user) return false;
+
+      const resetRes = await pool.query(
+        "SELECT id FROM password_resets WHERE user_id = $1 AND code_hash = $2 AND used_at IS NULL AND expires_at > NOW() ORDER BY created_at DESC LIMIT 1",
+        [user.id, hashResetCode(code)]
+      );
+      if (!resetRes.rows[0]) return false;
+
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("UPDATE users SET password_hash = $1 WHERE id = $2", [passwordHash, user.id]);
+        await client.query("UPDATE password_resets SET used_at = NOW() WHERE user_id = $1 AND used_at IS NULL", [user.id]);
+        await client.query("COMMIT");
+        return true;
+      } catch {
+        await client.query("ROLLBACK");
+        return false;
+      } finally {
+        client.release();
+      }
+    },
+
+    ensureDefaultList: async (userId) => {
+      const existing = await pool.query(
+        "SELECT id, name FROM pack_lists WHERE user_id = $1 ORDER BY id ASC LIMIT 1",
+        [userId]
+      );
+
+      let list = existing.rows[0];
+      if (!list) {
+        const inserted = await pool.query(
+          "INSERT INTO pack_lists (user_id, name, destination) VALUES ($1, $2, $3) RETURNING id, name",
+          [userId, defaultListName, ""]
+        );
+        list = inserted.rows[0];
+
+        for (const item of defaultSeedItems) {
+          await pool.query(
+            "INSERT INTO items (user_id, list_id, name, category, type, weight, qty) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            [userId, list.id, item.name, item.category, item.type, item.weight, item.qty]
+          );
+        }
+      }
+
+      await pool.query("UPDATE items SET list_id = $1 WHERE user_id = $2 AND list_id IS NULL", [list.id, userId]);
+      return list;
+    },
+
+    listPackLists: async (userId) => {
+      const { rows } = await pool.query(
+        "SELECT id, name FROM pack_lists WHERE user_id = $1 ORDER BY id ASC",
+        [userId]
+      );
+      return rows;
+    },
+
+    getPackListById: async (userId, listId) => {
+      const { rows } = await pool.query(
+        "SELECT id, name FROM pack_lists WHERE user_id = $1 AND id = $2 LIMIT 1",
+        [userId, listId]
+      );
+      return rows[0] || null;
+    },
+
+    createPackList: async (userId, name) => {
+      const { rows } = await pool.query(
+        "INSERT INTO pack_lists (user_id, name, destination) VALUES ($1, $2, $3) RETURNING id, name",
+        [userId, name, ""]
+      );
+      return rows[0];
+    },
+
+    clonePackList: async (userId, sourceListId, name) => {
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const created = await client.query(
+          "INSERT INTO pack_lists (user_id, name, destination) VALUES ($1, $2, $3) RETURNING id, name",
+          [userId, name, ""]
+        );
+        const newList = created.rows[0];
+
+        await client.query(
+          "INSERT INTO items (user_id, list_id, name, category, type, weight, qty) SELECT user_id, $1, name, category, type, weight, qty FROM items WHERE user_id = $2 AND list_id = $3",
+          [newList.id, userId, sourceListId]
+        );
+
+        await client.query("COMMIT");
+        return newList;
+      } catch {
+        await client.query("ROLLBACK");
+        throw new Error("clone_failed");
+      } finally {
+        client.release();
+      }
+    },
+
+    countPackLists: async (userId) => {
+      const { rows } = await pool.query("SELECT COUNT(*)::int AS c FROM pack_lists WHERE user_id = $1", [userId]);
+      return rows[0]?.c || 0;
+    },
+
+    deletePackList: async (userId, listId) => {
+      await pool.query("DELETE FROM items WHERE user_id = $1 AND list_id = $2", [userId, listId]);
+      const result = await pool.query("DELETE FROM pack_lists WHERE user_id = $1 AND id = $2", [userId, listId]);
+      return result.rowCount;
+    },
+
+    listItems: async (userId, listId) => {
+      const { rows } = await pool.query(
+        "SELECT id, name, category, type, weight, qty FROM items WHERE user_id = $1 AND list_id = $2 ORDER BY id DESC",
+        [userId, listId]
+      );
+      return rows;
+    },
+
+    createItem: async (userId, listId, item) => {
+      const { rows } = await pool.query(
+        "INSERT INTO items (user_id, list_id, name, category, type, weight, qty) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, name, category, type, weight, qty",
+        [userId, listId, item.name, item.category, item.type, item.weight, item.qty]
+      );
+      return rows[0];
+    },
+
+    deleteItem: async (id, userId) => {
+      const result = await pool.query("DELETE FROM items WHERE id = $1 AND user_id = $2", [id, userId]);
+      return result.rowCount;
+    },
+
+    clearItems: async (userId, listId) => {
+      const result = await pool.query("DELETE FROM items WHERE user_id = $1 AND list_id = $2", [userId, listId]);
+      return result.rowCount;
+    },
+  };
+}
+
+function sqliteHasColumn(sqlite, table, column) {
+  const rows = sqlite.prepare(`PRAGMA table_info(${table})`).all();
+  return rows.some((r) => r.name === column);
+}
+
+function createSqliteDb() {
   const sqlite = new Database(dbPath);
   sqlite.pragma("journal_mode = WAL");
   sqlite.pragma("foreign_keys = ON");
@@ -205,6 +343,15 @@ async function createDbClient() {
       email TEXT NOT NULL UNIQUE,
       password_hash TEXT NOT NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS pack_lists (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      destination TEXT NOT NULL DEFAULT '',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
     );
 
     CREATE TABLE IF NOT EXISTS items (
@@ -230,109 +377,167 @@ async function createDbClient() {
     );
   `);
 
+  if (!sqliteHasColumn(sqlite, "items", "list_id")) {
+    sqlite.exec("ALTER TABLE items ADD COLUMN list_id INTEGER");
+  }
+
   return {
     driver: "sqlite",
     close: () => sqlite.close(),
+
     getUserByEmail: async (email) => {
       return (
         sqlite.prepare("SELECT id, email, password_hash FROM users WHERE email = ?").get(email) || null
       );
     },
+
     getUserById: async (id) => {
       return sqlite.prepare("SELECT id, email FROM users WHERE id = ?").get(id) || null;
     },
+
     createUser: async (email, passwordHash) => {
       const result = sqlite
         .prepare("INSERT INTO users (email, password_hash) VALUES (?, ?)")
         .run(email, passwordHash);
       return { id: Number(result.lastInsertRowid), email };
     },
-    listItems: async (userId) => {
-      return sqlite
-        .prepare(
-          "SELECT id, name, category, type, weight, qty FROM items WHERE user_id = ? ORDER BY id DESC"
-        )
-        .all(userId);
-    },
-    createItem: async (userId, item) => {
-      const result = sqlite
-        .prepare(
-          "INSERT INTO items (user_id, name, category, type, weight, qty) VALUES (?, ?, ?, ?, ?, ?)"
-        )
-        .run(userId, item.name, item.category, item.type, item.weight, item.qty);
-      return sqlite
-        .prepare("SELECT id, name, category, type, weight, qty FROM items WHERE id = ?")
-        .get(result.lastInsertRowid);
-    },
-    deleteItem: async (id, userId) => {
-      const result = sqlite.prepare("DELETE FROM items WHERE id = ? AND user_id = ?").run(id, userId);
-      return result.changes;
-    },
-    clearItems: async (userId) => {
-      const result = sqlite.prepare("DELETE FROM items WHERE user_id = ?").run(userId);
-      return result.changes;
-    },
+
     createPasswordReset: async (email) => {
       const user = sqlite.prepare("SELECT id FROM users WHERE email = ?").get(email);
       if (!user) return null;
 
       const code = makeResetCode();
-      const codeHash = hashResetCode(code);
       sqlite
         .prepare(
           "INSERT INTO password_resets (user_id, code_hash, expires_at) VALUES (?, ?, datetime('now', '+15 minutes'))"
         )
-        .run(user.id, codeHash);
+        .run(user.id, hashResetCode(code));
       return code;
     },
+
     resetPasswordWithCode: async (email, code, passwordHash) => {
       const user = sqlite.prepare("SELECT id FROM users WHERE email = ?").get(email);
       if (!user) return false;
 
-      const codeHash = hashResetCode(code);
       const reset = sqlite
         .prepare(
           "SELECT id FROM password_resets WHERE user_id = ? AND code_hash = ? AND used_at IS NULL AND expires_at > datetime('now') ORDER BY created_at DESC LIMIT 1"
         )
-        .get(user.id, codeHash);
+        .get(user.id, hashResetCode(code));
       if (!reset) return false;
 
-      const updateUser = sqlite.prepare("UPDATE users SET password_hash = ? WHERE id = ?");
-      const invalidateCodes = sqlite.prepare(
-        "UPDATE password_resets SET used_at = datetime('now') WHERE user_id = ? AND used_at IS NULL"
-      );
-
       const tx = sqlite.transaction(() => {
-        updateUser.run(passwordHash, user.id);
-        invalidateCodes.run(user.id);
+        sqlite.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(passwordHash, user.id);
+        sqlite
+          .prepare("UPDATE password_resets SET used_at = datetime('now') WHERE user_id = ? AND used_at IS NULL")
+          .run(user.id);
       });
       tx();
       return true;
     },
+
+    ensureDefaultList: async (userId) => {
+      let list = sqlite.prepare("SELECT id, name FROM pack_lists WHERE user_id = ? ORDER BY id ASC LIMIT 1").get(userId);
+
+      if (!list) {
+        const result = sqlite
+          .prepare("INSERT INTO pack_lists (user_id, name, destination) VALUES (?, ?, ?)")
+          .run(userId, defaultListName, "");
+        list = { id: Number(result.lastInsertRowid), name: defaultListName };
+
+        const insertSeedItem = sqlite.prepare(
+          "INSERT INTO items (user_id, list_id, name, category, type, weight, qty) VALUES (?, ?, ?, ?, ?, ?, ?)"
+        );
+        for (const item of defaultSeedItems) {
+          insertSeedItem.run(userId, list.id, item.name, item.category, item.type, item.weight, item.qty);
+        }
+      }
+
+      sqlite.prepare("UPDATE items SET list_id = ? WHERE user_id = ? AND list_id IS NULL").run(list.id, userId);
+      return list;
+    },
+
+    listPackLists: async (userId) => {
+      return sqlite
+        .prepare("SELECT id, name FROM pack_lists WHERE user_id = ? ORDER BY id ASC")
+        .all(userId);
+    },
+
+    getPackListById: async (userId, listId) => {
+      return (
+        sqlite
+          .prepare("SELECT id, name FROM pack_lists WHERE user_id = ? AND id = ?")
+          .get(userId, listId) || null
+      );
+    },
+
+    createPackList: async (userId, name) => {
+      const result = sqlite
+        .prepare("INSERT INTO pack_lists (user_id, name, destination) VALUES (?, ?, ?)")
+        .run(userId, name, "");
+      return { id: Number(result.lastInsertRowid), name };
+    },
+
+    clonePackList: async (userId, sourceListId, name) => {
+      const insertList = sqlite.prepare("INSERT INTO pack_lists (user_id, name, destination) VALUES (?, ?, ?)");
+      const copyItems = sqlite.prepare(
+        "INSERT INTO items (user_id, list_id, name, category, type, weight, qty) SELECT user_id, ?, name, category, type, weight, qty FROM items WHERE user_id = ? AND list_id = ?"
+      );
+
+      const tx = sqlite.transaction(() => {
+        const result = insertList.run(userId, name, "");
+        const newListId = Number(result.lastInsertRowid);
+        copyItems.run(newListId, userId, sourceListId);
+        return { id: newListId, name };
+      });
+
+      return tx();
+    },
+
+    countPackLists: async (userId) => {
+      const row = sqlite.prepare("SELECT COUNT(*) AS c FROM pack_lists WHERE user_id = ?").get(userId);
+      return row?.c || 0;
+    },
+
+    deletePackList: async (userId, listId) => {
+      sqlite.prepare("DELETE FROM items WHERE user_id = ? AND list_id = ?").run(userId, listId);
+      const result = sqlite.prepare("DELETE FROM pack_lists WHERE user_id = ? AND id = ?").run(userId, listId);
+      return result.changes;
+    },
+
+    listItems: async (userId, listId) => {
+      return sqlite
+        .prepare(
+          "SELECT id, name, category, type, weight, qty FROM items WHERE user_id = ? AND list_id = ? ORDER BY id DESC"
+        )
+        .all(userId, listId);
+    },
+
+    createItem: async (userId, listId, item) => {
+      const result = sqlite
+        .prepare(
+          "INSERT INTO items (user_id, list_id, name, category, type, weight, qty) VALUES (?, ?, ?, ?, ?, ?, ?)"
+        )
+        .run(userId, listId, item.name, item.category, item.type, item.weight, item.qty);
+      return sqlite
+        .prepare("SELECT id, name, category, type, weight, qty FROM items WHERE id = ?")
+        .get(result.lastInsertRowid);
+    },
+
+    deleteItem: async (id, userId) => {
+      const result = sqlite.prepare("DELETE FROM items WHERE id = ? AND user_id = ?").run(id, userId);
+      return result.changes;
+    },
+
+    clearItems: async (userId, listId) => {
+      const result = sqlite.prepare("DELETE FROM items WHERE user_id = ? AND list_id = ?").run(userId, listId);
+      return result.changes;
+    },
   };
 }
 
-function normalizeEmail(email = "") {
-  return email.trim().toLowerCase();
-}
-
-function signToken(user) {
-  return jwt.sign({ sub: Number(user.id), email: user.email }, jwtSecret, { expiresIn: "7d" });
-}
-
-function authRequired(req, res, next) {
-  const authHeader = req.headers.authorization || "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
-  if (!token) {
-    return res.status(401).json({ error: "未登录" });
-  }
-
-  try {
-    req.user = jwt.verify(token, jwtSecret);
-    return next();
-  } catch {
-    return res.status(401).json({ error: "登录已过期，请重新登录" });
-  }
+async function createDbClient() {
+  return databaseUrl ? createPostgresDb() : createSqliteDb();
 }
 
 async function main() {
@@ -350,20 +555,13 @@ async function main() {
       const email = normalizeEmail(req.body?.email);
       const password = req.body?.password || "";
 
-      if (!email || !password) {
-        return res.status(400).json({ error: "邮箱和密码不能为空" });
-      }
-      if (password.length < 6) {
-        return res.status(400).json({ error: "密码至少 6 位" });
-      }
+      if (!email || !password) return res.status(400).json({ error: "邮箱和密码不能为空" });
+      if (password.length < 6) return res.status(400).json({ error: "密码至少 6 位" });
 
       const existing = await db.getUserByEmail(email);
-      if (existing) {
-        return res.status(409).json({ error: "该邮箱已注册" });
-      }
+      if (existing) return res.status(409).json({ error: "该邮箱已注册" });
 
-      const passwordHash = bcrypt.hashSync(password, 10);
-      const user = await db.createUser(email, passwordHash);
+      const user = await db.createUser(email, bcrypt.hashSync(password, 10));
       const token = signToken(user);
       return res.status(201).json({ token, user });
     } catch {
@@ -376,17 +574,10 @@ async function main() {
       const email = normalizeEmail(req.body?.email);
       const password = req.body?.password || "";
 
-      if (!email || !password) {
-        return res.status(400).json({ error: "邮箱和密码不能为空" });
-      }
+      if (!email || !password) return res.status(400).json({ error: "邮箱和密码不能为空" });
 
       const user = await db.getUserByEmail(email);
-      if (!user) {
-        return res.status(401).json({ error: "邮箱或密码错误" });
-      }
-
-      const ok = bcrypt.compareSync(password, user.password_hash);
-      if (!ok) {
+      if (!user || !bcrypt.compareSync(password, user.password_hash)) {
         return res.status(401).json({ error: "邮箱或密码错误" });
       }
 
@@ -400,9 +591,7 @@ async function main() {
   app.post("/api/auth/forgot-password", async (req, res) => {
     try {
       const email = normalizeEmail(req.body?.email);
-      if (!email) {
-        return res.status(400).json({ error: "请输入邮箱" });
-      }
+      if (!email) return res.status(400).json({ error: "请输入邮箱" });
 
       const resetCode = await db.createPasswordReset(email);
       const message = "如果该邮箱已注册，我们已发送重置码（有效期 15 分钟）";
@@ -417,10 +606,7 @@ async function main() {
         }
       }
 
-      if (resetCode && exposeResetCode) {
-        return res.json({ ok: true, message, resetCode });
-      }
-
+      if (resetCode && exposeResetCode) return res.json({ ok: true, message, resetCode });
       return res.json({ ok: true, message });
     } catch {
       return res.status(500).json({ error: "发送重置码失败" });
@@ -433,21 +619,12 @@ async function main() {
       const code = String(req.body?.code || "").trim();
       const newPassword = req.body?.newPassword || "";
 
-      if (!email || !code || !newPassword) {
-        return res.status(400).json({ error: "请填写完整信息" });
-      }
-      if (!/^\d{6}$/.test(code)) {
-        return res.status(400).json({ error: "重置码应为 6 位数字" });
-      }
-      if (newPassword.length < 6) {
-        return res.status(400).json({ error: "新密码至少 6 位" });
-      }
+      if (!email || !code || !newPassword) return res.status(400).json({ error: "请填写完整信息" });
+      if (!/^\d{6}$/.test(code)) return res.status(400).json({ error: "重置码应为 6 位数字" });
+      if (newPassword.length < 6) return res.status(400).json({ error: "新密码至少 6 位" });
 
-      const passwordHash = bcrypt.hashSync(newPassword, 10);
-      const ok = await db.resetPasswordWithCode(email, code, passwordHash);
-      if (!ok) {
-        return res.status(400).json({ error: "重置码无效或已过期" });
-      }
+      const ok = await db.resetPasswordWithCode(email, code, bcrypt.hashSync(newPassword, 10));
+      if (!ok) return res.status(400).json({ error: "重置码无效或已过期" });
 
       return res.json({ ok: true, message: "密码已重置，请使用新密码登录" });
     } catch {
@@ -457,8 +634,7 @@ async function main() {
 
   app.get("/api/auth/me", authRequired, async (req, res) => {
     try {
-      const userId = Number(req.user.sub);
-      const user = await db.getUserById(userId);
+      const user = await db.getUserById(Number(req.user.sub));
       if (!user) return res.status(401).json({ error: "用户不存在" });
       return res.json({ user: { id: Number(user.id), email: user.email } });
     } catch {
@@ -466,11 +642,84 @@ async function main() {
     }
   });
 
+  app.get("/api/lists", authRequired, async (req, res) => {
+    try {
+      const userId = Number(req.user.sub);
+      const defaultList = await db.ensureDefaultList(userId);
+      const lists = await db.listPackLists(userId);
+      return res.json({ lists, defaultListId: Number(defaultList.id) });
+    } catch {
+      return res.status(500).json({ error: "获取行程清单失败" });
+    }
+  });
+
+  app.post("/api/lists", authRequired, async (req, res) => {
+    try {
+      const userId = Number(req.user.sub);
+      const name = String(req.body?.name || "").trim();
+      if (!name) return res.status(400).json({ error: "清单名称不能为空" });
+
+      const list = await db.createPackList(userId, name.slice(0, 40));
+      const lists = await db.listPackLists(userId);
+      return res.status(201).json({ list, lists });
+    } catch {
+      return res.status(500).json({ error: "创建清单失败" });
+    }
+  });
+
+  app.post("/api/lists/:id/clone", authRequired, async (req, res) => {
+    try {
+      const userId = Number(req.user.sub);
+      const sourceListId = Number(req.params.id);
+      if (!Number.isInteger(sourceListId) || sourceListId <= 0) {
+        return res.status(400).json({ error: "无效清单 id" });
+      }
+
+      const sourceList = await db.getPackListById(userId, sourceListId);
+      if (!sourceList) return res.status(404).json({ error: "源清单不存在" });
+
+      const customName = String(req.body?.name || "").trim();
+      const cloneName = (customName || `${sourceList.name} (复制)`).slice(0, 40);
+      const list = await db.clonePackList(userId, sourceListId, cloneName);
+      const lists = await db.listPackLists(userId);
+      return res.status(201).json({ list, lists });
+    } catch {
+      return res.status(500).json({ error: "复制清单失败" });
+    }
+  });
+
+  app.delete("/api/lists/:id", authRequired, async (req, res) => {
+    try {
+      const userId = Number(req.user.sub);
+      const listId = Number(req.params.id);
+      if (!Number.isInteger(listId) || listId <= 0) return res.status(400).json({ error: "无效清单 id" });
+
+      const count = await db.countPackLists(userId);
+      if (count <= 1) return res.status(400).json({ error: "至少保留一个行程清单" });
+
+      const changes = await db.deletePackList(userId, listId);
+      if (!changes) return res.status(404).json({ error: "清单不存在" });
+
+      const lists = await db.listPackLists(userId);
+      return res.json({ ok: true, lists, activeListId: Number(lists[0]?.id || 0) });
+    } catch {
+      return res.status(500).json({ error: "删除清单失败" });
+    }
+  });
+
   app.get("/api/items", authRequired, async (req, res) => {
     try {
       const userId = Number(req.user.sub);
-      const items = await db.listItems(userId);
-      return res.json({ items });
+      const defaultList = await db.ensureDefaultList(userId);
+
+      let listId = Number(req.query?.listId || defaultList.id);
+      if (!Number.isInteger(listId) || listId <= 0) listId = Number(defaultList.id);
+
+      const list = await db.getPackListById(userId, listId);
+      if (!list) return res.status(404).json({ error: "清单不存在" });
+
+      const items = await db.listItems(userId, listId);
+      return res.json({ items, activeListId: listId });
     } catch {
       return res.status(500).json({ error: "获取清单失败" });
     }
@@ -478,24 +727,25 @@ async function main() {
 
   app.post("/api/items", authRequired, async (req, res) => {
     try {
+      const userId = Number(req.user.sub);
+      const listId = Number(req.body?.listId);
       const name = String(req.body?.name || "").trim();
       const category = String(req.body?.category || "").trim();
       const type = String(req.body?.type || "").trim();
       const weight = Number(req.body?.weight);
       const qty = Number(req.body?.qty);
 
-      if (!name || !category || !type) {
-        return res.status(400).json({ error: "请填写完整装备信息" });
-      }
-      if (!["base", "worn", "consumable"].includes(type)) {
-        return res.status(400).json({ error: "装备类型不正确" });
-      }
+      if (!Number.isInteger(listId) || listId <= 0) return res.status(400).json({ error: "请选择有效清单" });
+      if (!name || !category || !type) return res.status(400).json({ error: "请填写完整装备信息" });
+      if (!["base", "worn", "consumable"].includes(type)) return res.status(400).json({ error: "装备类型不正确" });
       if (!Number.isFinite(weight) || !Number.isFinite(qty) || weight <= 0 || qty <= 0) {
         return res.status(400).json({ error: "重量和数量必须大于 0" });
       }
 
-      const userId = Number(req.user.sub);
-      const item = await db.createItem(userId, {
+      const list = await db.getPackListById(userId, listId);
+      if (!list) return res.status(404).json({ error: "清单不存在" });
+
+      const item = await db.createItem(userId, listId, {
         name,
         category,
         type,
@@ -512,15 +762,10 @@ async function main() {
   app.delete("/api/items/:id", authRequired, async (req, res) => {
     try {
       const id = Number(req.params.id);
-      if (!Number.isInteger(id) || id <= 0) {
-        return res.status(400).json({ error: "无效的装备 id" });
-      }
+      if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: "无效的装备 id" });
 
-      const userId = Number(req.user.sub);
-      const changes = await db.deleteItem(id, userId);
-      if (!changes) {
-        return res.status(404).json({ error: "装备不存在" });
-      }
+      const changes = await db.deleteItem(id, Number(req.user.sub));
+      if (!changes) return res.status(404).json({ error: "装备不存在" });
 
       return res.json({ ok: true });
     } catch {
@@ -531,7 +776,13 @@ async function main() {
   app.delete("/api/items", authRequired, async (req, res) => {
     try {
       const userId = Number(req.user.sub);
-      const deleted = await db.clearItems(userId);
+      const listId = Number(req.query?.listId);
+      if (!Number.isInteger(listId) || listId <= 0) return res.status(400).json({ error: "请选择有效清单" });
+
+      const list = await db.getPackListById(userId, listId);
+      if (!list) return res.status(404).json({ error: "清单不存在" });
+
+      const deleted = await db.clearItems(userId, listId);
       return res.json({ ok: true, deleted });
     } catch {
       return res.status(500).json({ error: "清空失败" });

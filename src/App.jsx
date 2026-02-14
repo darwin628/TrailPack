@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 const TOKEN_KEY = "trailpack.auth.token.v1";
+const LIST_KEY = "trailpack.active.list.v1";
 const API_BASE = import.meta.env.VITE_API_BASE || "";
 
 const categories = [
@@ -23,9 +24,7 @@ async function api(path, options = {}, token) {
   });
 
   const payload = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error(payload.error || "请求失败");
-  }
+  if (!res.ok) throw new Error(payload.error || "请求失败");
   return payload;
 }
 
@@ -58,22 +57,22 @@ function typeLabel(type) {
 export default function App() {
   const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY) || "");
   const [session, setSession] = useState(null);
+  const [lists, setLists] = useState([]);
+  const [activeListId, setActiveListId] = useState(0);
   const [items, setItems] = useState([]);
   const [authChecking, setAuthChecking] = useState(true);
 
   const [authMode, setAuthMode] = useState("login");
   const [authForm, setAuthForm] = useState({ email: "", password: "", confirmPassword: "" });
-  const [resetForm, setResetForm] = useState({
-    email: "",
-    code: "",
-    newPassword: "",
-    confirmPassword: "",
-  });
+  const [resetForm, setResetForm] = useState({ email: "", code: "", newPassword: "", confirmPassword: "" });
   const [resetStep, setResetStep] = useState("request");
+
+  const [listForm, setListForm] = useState({ name: "" });
 
   const [authError, setAuthError] = useState("");
   const [authInfo, setAuthInfo] = useState("");
   const [authPending, setAuthPending] = useState(false);
+  const [listPending, setListPending] = useState(false);
   const [appError, setAppError] = useState("");
 
   const [form, setForm] = useState({
@@ -84,34 +83,11 @@ export default function App() {
     qty: "1",
   });
 
-  useEffect(() => {
-    async function bootstrap() {
-      if (!token) {
-        setAuthChecking(false);
-        return;
-      }
-
-      try {
-        const [meData, itemsData] = await Promise.all([
-          api("/api/auth/me", {}, token),
-          api("/api/items", {}, token),
-        ]);
-        setSession(meData.user);
-        setItems(itemsData.items || []);
-      } catch {
-        localStorage.removeItem(TOKEN_KEY);
-        setToken("");
-        setSession(null);
-        setItems([]);
-      } finally {
-        setAuthChecking(false);
-      }
-    }
-
-    bootstrap();
-  }, [token]);
-
   const grouped = useMemo(() => groupByCategory(items), [items]);
+
+  const currentList = useMemo(() => {
+    return lists.find((it) => Number(it.id) === Number(activeListId)) || null;
+  }, [lists, activeListId]);
 
   const totals = useMemo(() => {
     const total = items.reduce((sum, item) => sum + itemTotal(item), 0);
@@ -131,6 +107,57 @@ export default function App() {
       })
       .sort((a, b) => b.weight - a.weight);
   }, [grouped, items.length, totals.total]);
+
+  async function fetchItemsForList(listId, authToken = token) {
+    if (!listId) {
+      setItems([]);
+      return;
+    }
+    const data = await api(`/api/items?listId=${listId}`, {}, authToken);
+    const resolvedId = Number(data.activeListId || listId);
+    setItems(data.items || []);
+    setActiveListId(resolvedId);
+    localStorage.setItem(LIST_KEY, String(resolvedId));
+  }
+
+  useEffect(() => {
+    async function bootstrap() {
+      if (!token) {
+        setAuthChecking(false);
+        return;
+      }
+
+      try {
+        const [meData, listData] = await Promise.all([api("/api/auth/me", {}, token), api("/api/lists", {}, token)]);
+        setSession(meData.user);
+
+        const nextLists = listData.lists || [];
+        setLists(nextLists);
+
+        const remembered = Number(localStorage.getItem(LIST_KEY) || 0);
+        const matched = nextLists.find((it) => Number(it.id) === remembered);
+        const firstId = Number(matched?.id || listData.defaultListId || nextLists[0]?.id || 0);
+
+        if (firstId) {
+          await fetchItemsForList(firstId, token);
+        } else {
+          setItems([]);
+        }
+      } catch {
+        localStorage.removeItem(TOKEN_KEY);
+        localStorage.removeItem(LIST_KEY);
+        setToken("");
+        setSession(null);
+        setLists([]);
+        setActiveListId(0);
+        setItems([]);
+      } finally {
+        setAuthChecking(false);
+      }
+    }
+
+    bootstrap();
+  }, [token]);
 
   function switchAuthMode(mode) {
     setAuthMode(mode);
@@ -152,9 +179,7 @@ export default function App() {
       const email = normalizeEmail(authForm.email);
       const password = authForm.password;
 
-      if (!email || !password) {
-        throw new Error("请输入邮箱和密码");
-      }
+      if (!email || !password) throw new Error("请输入邮箱和密码");
       if (authMode === "register") {
         if (password.length < 6) throw new Error("密码至少 6 位");
         if (password !== authForm.confirmPassword) throw new Error("两次密码输入不一致");
@@ -193,9 +218,7 @@ export default function App() {
       });
 
       let message = data.message || "如果邮箱存在，已发送重置码。";
-      if (data.resetCode) {
-        message += ` 测试重置码: ${data.resetCode}`;
-      }
+      if (data.resetCode) message += ` 测试重置码: ${data.resetCode}`;
 
       setAuthInfo(message);
       setResetStep("reset");
@@ -239,10 +262,104 @@ export default function App() {
     }
   }
 
+  async function onCreateList(e) {
+    e.preventDefault();
+    setAppError("");
+    setListPending(true);
+    try {
+      const name = listForm.name.trim();
+      if (!name) throw new Error("请输入清单名称");
+
+      const data = await api(
+        "/api/lists",
+        {
+          method: "POST",
+          body: JSON.stringify({ name }),
+        },
+        token
+      );
+
+      setLists(data.lists || []);
+      setListForm({ name: "" });
+      await fetchItemsForList(Number(data.list?.id || 0));
+    } catch (err) {
+      setAppError(err.message || "创建清单失败");
+    } finally {
+      setListPending(false);
+    }
+  }
+
+  async function onDeleteCurrentList() {
+    if (!activeListId) return;
+    if (!window.confirm("确认删除当前行程清单及其装备？")) return;
+
+    setAppError("");
+    setListPending(true);
+    try {
+      const data = await api(`/api/lists/${activeListId}`, { method: "DELETE" }, token);
+      setLists(data.lists || []);
+      const nextId = Number(data.activeListId || data.lists?.[0]?.id || 0);
+      if (nextId) {
+        await fetchItemsForList(nextId);
+      } else {
+        setActiveListId(0);
+        setItems([]);
+      }
+    } catch (err) {
+      setAppError(err.message || "删除清单失败");
+    } finally {
+      setListPending(false);
+    }
+  }
+
+  async function onSwitchList(nextId) {
+    if (!nextId || Number(nextId) === Number(activeListId)) return;
+    setAppError("");
+    try {
+      await fetchItemsForList(Number(nextId));
+    } catch (err) {
+      setAppError(err.message || "切换清单失败");
+    }
+  }
+
+  async function onCloneCurrentList() {
+    if (!activeListId || !currentList) return;
+
+    const input = window.prompt("请输入复制后清单名称", `${currentList.name} (复制)`);
+    if (input === null) return;
+    const name = input.trim();
+    if (!name) {
+      setAppError("清单名称不能为空");
+      return;
+    }
+
+    setAppError("");
+    setListPending(true);
+    try {
+      const data = await api(
+        `/api/lists/${activeListId}/clone`,
+        {
+          method: "POST",
+          body: JSON.stringify({ name }),
+        },
+        token
+      );
+      setLists(data.lists || []);
+      await fetchItemsForList(Number(data.list?.id || 0));
+    } catch (err) {
+      setAppError(err.message || "复制清单失败");
+    } finally {
+      setListPending(false);
+    }
+  }
+
   function logout() {
     localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(LIST_KEY);
     setToken("");
     setSession(null);
+    setLists([]);
+    setActiveListId(0);
     setItems([]);
     setAppError("");
   }
@@ -250,6 +367,11 @@ export default function App() {
   async function onSubmit(e) {
     e.preventDefault();
     setAppError("");
+
+    if (!activeListId) {
+      setAppError("请先创建并选择一个行程清单");
+      return;
+    }
 
     const weight = Number(form.weight);
     const qty = Number(form.qty);
@@ -262,6 +384,7 @@ export default function App() {
         {
           method: "POST",
           body: JSON.stringify({
+            listId: activeListId,
             name,
             category: form.category,
             type: form.type,
@@ -289,12 +412,13 @@ export default function App() {
   }
 
   async function clearAll() {
+    if (!activeListId) return;
     if (!items.length) return;
-    if (!window.confirm("确认清空全部装备？")) return;
-    setAppError("");
+    if (!window.confirm("确认清空当前行程清单装备？")) return;
 
+    setAppError("");
     try {
-      await api("/api/items", { method: "DELETE" }, token);
+      await api(`/api/items?listId=${activeListId}`, { method: "DELETE" }, token);
       setItems([]);
     } catch (err) {
       setAppError(err.message || "清空失败");
@@ -321,68 +445,29 @@ export default function App() {
           <section className="auth-card card">
             <p className="eyebrow">TrailPack Account</p>
             <h1>登录后管理你的装备清单</h1>
-            <p className="muted">现在数据已保存到数据库，不再依赖浏览器本地存储。</p>
+            <p className="muted">支持多个目的地的独立装备清单。</p>
 
             <div className="auth-tabs auth-tabs-3">
-              <button
-                type="button"
-                className={`tab ${authMode === "login" ? "active" : ""}`}
-                onClick={() => switchAuthMode("login")}
-              >
-                登录
-              </button>
-              <button
-                type="button"
-                className={`tab ${authMode === "register" ? "active" : ""}`}
-                onClick={() => switchAuthMode("register")}
-              >
-                注册
-              </button>
-              <button
-                type="button"
-                className={`tab ${authMode === "forgot" ? "active" : ""}`}
-                onClick={() => switchAuthMode("forgot")}
-              >
-                忘记密码
-              </button>
+              <button type="button" className={`tab ${authMode === "login" ? "active" : ""}`} onClick={() => switchAuthMode("login")}>登录</button>
+              <button type="button" className={`tab ${authMode === "register" ? "active" : ""}`} onClick={() => switchAuthMode("register")}>注册</button>
+              <button type="button" className={`tab ${authMode === "forgot" ? "active" : ""}`} onClick={() => switchAuthMode("forgot")}>忘记密码</button>
             </div>
 
             {(authMode === "login" || authMode === "register") && (
               <form className="item-form" onSubmit={onAuthSubmit}>
                 <label>
                   邮箱
-                  <input
-                    type="email"
-                    autoComplete="email"
-                    required
-                    value={authForm.email}
-                    onChange={(e) => setAuthForm((prev) => ({ ...prev, email: e.target.value }))}
-                  />
+                  <input type="email" autoComplete="email" required value={authForm.email} onChange={(e) => setAuthForm((prev) => ({ ...prev, email: e.target.value }))} />
                 </label>
-
                 <label>
                   密码
-                  <input
-                    type="password"
-                    autoComplete={authMode === "login" ? "current-password" : "new-password"}
-                    required
-                    value={authForm.password}
-                    onChange={(e) => setAuthForm((prev) => ({ ...prev, password: e.target.value }))}
-                  />
+                  <input type="password" autoComplete={authMode === "login" ? "current-password" : "new-password"} required value={authForm.password} onChange={(e) => setAuthForm((prev) => ({ ...prev, password: e.target.value }))} />
                 </label>
 
                 {authMode === "register" && (
                   <label>
                     确认密码
-                    <input
-                      type="password"
-                      autoComplete="new-password"
-                      required
-                      value={authForm.confirmPassword}
-                      onChange={(e) =>
-                        setAuthForm((prev) => ({ ...prev, confirmPassword: e.target.value }))
-                      }
-                    />
+                    <input type="password" autoComplete="new-password" required value={authForm.confirmPassword} onChange={(e) => setAuthForm((prev) => ({ ...prev, confirmPassword: e.target.value }))} />
                   </label>
                 )}
 
@@ -399,21 +484,13 @@ export default function App() {
               <form className="item-form" onSubmit={onRequestResetCode}>
                 <label>
                   注册邮箱
-                  <input
-                    type="email"
-                    autoComplete="email"
-                    required
-                    value={resetForm.email}
-                    onChange={(e) => setResetForm((prev) => ({ ...prev, email: e.target.value }))}
-                  />
+                  <input type="email" autoComplete="email" required value={resetForm.email} onChange={(e) => setResetForm((prev) => ({ ...prev, email: e.target.value }))} />
                 </label>
 
                 {authError && <p className="auth-error">{authError}</p>}
                 {authInfo && <p className="auth-info">{authInfo}</p>}
 
-                <button type="submit" disabled={authPending}>
-                  {authPending ? "处理中..." : "发送重置码"}
-                </button>
+                <button type="submit" disabled={authPending}>{authPending ? "处理中..." : "发送重置码"}</button>
               </form>
             )}
 
@@ -421,45 +498,19 @@ export default function App() {
               <form className="item-form" onSubmit={onResetPassword}>
                 <label>
                   邮箱
-                  <input
-                    type="email"
-                    autoComplete="email"
-                    required
-                    value={resetForm.email}
-                    onChange={(e) => setResetForm((prev) => ({ ...prev, email: e.target.value }))}
-                  />
+                  <input type="email" autoComplete="email" required value={resetForm.email} onChange={(e) => setResetForm((prev) => ({ ...prev, email: e.target.value }))} />
                 </label>
                 <label>
                   6位重置码
-                  <input
-                    inputMode="numeric"
-                    pattern="[0-9]{6}"
-                    required
-                    value={resetForm.code}
-                    onChange={(e) => setResetForm((prev) => ({ ...prev, code: e.target.value }))}
-                  />
+                  <input inputMode="numeric" pattern="[0-9]{6}" required value={resetForm.code} onChange={(e) => setResetForm((prev) => ({ ...prev, code: e.target.value }))} />
                 </label>
                 <label>
                   新密码
-                  <input
-                    type="password"
-                    autoComplete="new-password"
-                    required
-                    value={resetForm.newPassword}
-                    onChange={(e) => setResetForm((prev) => ({ ...prev, newPassword: e.target.value }))}
-                  />
+                  <input type="password" autoComplete="new-password" required value={resetForm.newPassword} onChange={(e) => setResetForm((prev) => ({ ...prev, newPassword: e.target.value }))} />
                 </label>
                 <label>
                   确认新密码
-                  <input
-                    type="password"
-                    autoComplete="new-password"
-                    required
-                    value={resetForm.confirmPassword}
-                    onChange={(e) =>
-                      setResetForm((prev) => ({ ...prev, confirmPassword: e.target.value }))
-                    }
-                  />
+                  <input type="password" autoComplete="new-password" required value={resetForm.confirmPassword} onChange={(e) => setResetForm((prev) => ({ ...prev, confirmPassword: e.target.value }))} />
                 </label>
 
                 {authError && <p className="auth-error">{authError}</p>}
@@ -467,9 +518,7 @@ export default function App() {
 
                 <div className="auth-actions">
                   <button type="button" className="ghost" onClick={() => setResetStep("request")}>重新获取重置码</button>
-                  <button type="submit" disabled={authPending}>
-                    {authPending ? "处理中..." : "重置密码"}
-                  </button>
+                  <button type="submit" disabled={authPending}>{authPending ? "处理中..." : "重置密码"}</button>
                 </div>
               </form>
             )}
@@ -488,9 +537,12 @@ export default function App() {
         <header className="hero card">
           <div>
             <p className="eyebrow">TrailPack Planner</p>
-            <h1>更优雅的徒步装备清单</h1>
-            <p className="muted">像 LighterPack 一样管理重量，但拥有更好的视觉体验与交互。</p>
+            <h1>多目的地装备清单</h1>
+            <p className="muted">为不同路线维护独立装备清单，重量统计互不干扰。</p>
             <p className="muted user-pill">当前用户: {session.email}</p>
+            <p className="active-list-badge">
+              当前清单: {currentList ? currentList.name : "未选择"}
+            </p>
           </div>
           <div className="hero-metrics">
             <div className="metric">
@@ -501,11 +553,46 @@ export default function App() {
               <span>总携带重量</span>
               <strong>{formatG(totals.total)}</strong>
             </div>
-            <button type="button" className="ghost" onClick={logout}>
-              退出登录
-            </button>
+            <button type="button" className="ghost" onClick={logout}>退出登录</button>
           </div>
         </header>
+
+        <section className="list-manager card">
+          <div className="list-manager-head">
+            <div>
+              <h2>行程清单</h2>
+              <p className="muted">切换和复制行程清单</p>
+            </div>
+            <div className="list-actions">
+              <button type="button" className="ghost" onClick={onCloneCurrentList} disabled={listPending || !activeListId}>复制当前清单</button>
+              <button type="button" className="ghost" onClick={onDeleteCurrentList} disabled={listPending || !activeListId}>删除当前清单</button>
+            </div>
+          </div>
+
+          <div className="list-manager-grid">
+            <label>
+              当前清单
+              <select value={activeListId || ""} onChange={(e) => onSwitchList(Number(e.target.value))}>
+                {lists.map((it) => (
+                  <option key={it.id} value={it.id}>
+                    {it.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              新清单名称
+              <input value={listForm.name} maxLength={40} placeholder="例如：川西 4 日徒步" onChange={(e) => setListForm((prev) => ({ ...prev, name: e.target.value }))} />
+            </label>
+            <button type="button" onClick={onCreateList} disabled={listPending}>{listPending ? "处理中..." : "创建新清单"}</button>
+          </div>
+
+          {currentList && (
+            <p className="muted current-list-tip">
+              当前正在编辑: {currentList.name}
+            </p>
+          )}
+        </section>
 
         {appError && <p className="app-error">{appError}</p>}
 
@@ -515,34 +602,21 @@ export default function App() {
             <form className="item-form" onSubmit={onSubmit}>
               <label>
                 名称
-                <input
-                  required
-                  maxLength={40}
-                  placeholder="例如：帐篷"
-                  value={form.name}
-                  onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))}
-                />
+                <input required maxLength={40} placeholder="例如：帐篷" value={form.name} onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))} />
               </label>
 
               <div className="row">
                 <label>
                   分类
-                  <select
-                    value={form.category}
-                    onChange={(e) => setForm((prev) => ({ ...prev, category: e.target.value }))}
-                  >
+                  <select value={form.category} onChange={(e) => setForm((prev) => ({ ...prev, category: e.target.value }))}>
                     {categories.map((cat) => (
                       <option key={cat}>{cat}</option>
                     ))}
                   </select>
                 </label>
-
                 <label>
                   类型
-                  <select
-                    value={form.type}
-                    onChange={(e) => setForm((prev) => ({ ...prev, type: e.target.value }))}
-                  >
+                  <select value={form.type} onChange={(e) => setForm((prev) => ({ ...prev, type: e.target.value }))}>
                     <option value="base">基础装备</option>
                     <option value="worn">穿戴</option>
                     <option value="consumable">消耗品</option>
@@ -553,43 +627,26 @@ export default function App() {
               <div className="row">
                 <label>
                   单件重量(g)
-                  <input
-                    type="number"
-                    min="1"
-                    step="1"
-                    required
-                    value={form.weight}
-                    onChange={(e) => setForm((prev) => ({ ...prev, weight: e.target.value }))}
-                  />
+                  <input type="number" min="1" step="1" required value={form.weight} onChange={(e) => setForm((prev) => ({ ...prev, weight: e.target.value }))} />
                 </label>
-
                 <label>
                   数量
-                  <input
-                    type="number"
-                    min="1"
-                    step="1"
-                    required
-                    value={form.qty}
-                    onChange={(e) => setForm((prev) => ({ ...prev, qty: e.target.value }))}
-                  />
+                  <input type="number" min="1" step="1" required value={form.qty} onChange={(e) => setForm((prev) => ({ ...prev, qty: e.target.value }))} />
                 </label>
               </div>
 
-              <button type="submit">添加到清单</button>
+              <button type="submit" disabled={!activeListId}>添加到当前清单</button>
             </form>
           </section>
 
           <section className="right-panel card">
             <div className="panel-head">
               <h2>装备清单</h2>
-              <button type="button" className="ghost" onClick={clearAll}>
-                清空
-              </button>
+              <button type="button" className="ghost" onClick={clearAll}>清空当前清单</button>
             </div>
 
             <div className="groups">
-              {!items.length && <p className="empty">还没有装备，先添加一件试试。</p>}
+              {!items.length && <p className="empty">当前清单还没有装备，先添加一件试试。</p>}
               {Object.entries(grouped).map(([category, list]) => {
                 const total = list.reduce((sum, item) => sum + itemTotal(item), 0);
                 return (
@@ -602,20 +659,11 @@ export default function App() {
                       <article className="item" key={item.id}>
                         <div>
                           <p className="item-name">{item.name}</p>
-                          <p className="item-meta">
-                            {typeLabel(item.type)} · {item.qty} x {item.weight}g
-                          </p>
+                          <p className="item-meta">{typeLabel(item.type)} · {item.qty} x {item.weight}g</p>
                         </div>
                         <div className="item-right">
                           <strong className="item-weight">{formatG(itemTotal(item))}</strong>
-                          <button
-                            type="button"
-                            className="delete-btn"
-                            onClick={() => removeItem(item.id)}
-                            title="删除"
-                          >
-                            ✕
-                          </button>
+                          <button type="button" className="delete-btn" onClick={() => removeItem(item.id)} title="删除">✕</button>
                         </div>
                       </article>
                     ))}
@@ -634,9 +682,7 @@ export default function App() {
               <div className="chart-row" key={entry.category}>
                 <div className="chart-meta">
                   <span>{entry.category}</span>
-                  <span>
-                    {formatG(entry.weight)} ({entry.pct.toFixed(1)}%)
-                  </span>
+                  <span>{formatG(entry.weight)} ({entry.pct.toFixed(1)}%)</span>
                 </div>
                 <div className="bar">
                   <span style={{ width: `${entry.pct}%` }} />
