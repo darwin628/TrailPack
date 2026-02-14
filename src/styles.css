@@ -342,6 +342,10 @@ button.ghost {
   gap: 10px;
 }
 
+.auth-tabs-3 {
+  grid-template-columns: repeat(3, 1fr);
+}
+
 button.tab {
   background: #fff;
   color: var(--ink);
@@ -358,6 +362,18 @@ button.tab.active {
   margin: 0;
   color: var(--danger);
   font-size: 13px;
+}
+
+.auth-info {
+  margin: 0;
+  color: #0b6e53;
+  font-size: 13px;
+}
+
+.auth-actions {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 1fr 1fr;
 }
 
 .user-pill {

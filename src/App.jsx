@@ -63,7 +63,16 @@ export default function App() {
 
   const [authMode, setAuthMode] = useState("login");
   const [authForm, setAuthForm] = useState({ email: "", password: "", confirmPassword: "" });
+  const [resetForm, setResetForm] = useState({
+    email: "",
+    code: "",
+    newPassword: "",
+    confirmPassword: "",
+  });
+  const [resetStep, setResetStep] = useState("request");
+
   const [authError, setAuthError] = useState("");
+  const [authInfo, setAuthInfo] = useState("");
   const [authPending, setAuthPending] = useState(false);
   const [appError, setAppError] = useState("");
 
@@ -123,9 +132,20 @@ export default function App() {
       .sort((a, b) => b.weight - a.weight);
   }, [grouped, items.length, totals.total]);
 
+  function switchAuthMode(mode) {
+    setAuthMode(mode);
+    setAuthError("");
+    setAuthInfo("");
+    if (mode === "forgot") {
+      setResetStep("request");
+      setResetForm((prev) => ({ ...prev, code: "", newPassword: "", confirmPassword: "" }));
+    }
+  }
+
   async function onAuthSubmit(e) {
     e.preventDefault();
     setAuthError("");
+    setAuthInfo("");
     setAuthPending(true);
 
     try {
@@ -152,6 +172,68 @@ export default function App() {
       setAuthForm({ email: "", password: "", confirmPassword: "" });
     } catch (err) {
       setAuthError(err.message || "登录失败");
+    } finally {
+      setAuthPending(false);
+    }
+  }
+
+  async function onRequestResetCode(e) {
+    e.preventDefault();
+    setAuthError("");
+    setAuthInfo("");
+    setAuthPending(true);
+
+    try {
+      const email = normalizeEmail(resetForm.email);
+      if (!email) throw new Error("请输入邮箱");
+
+      const data = await api("/api/auth/forgot-password", {
+        method: "POST",
+        body: JSON.stringify({ email }),
+      });
+
+      let message = data.message || "如果邮箱存在，已发送重置码。";
+      if (data.resetCode) {
+        message += ` 测试重置码: ${data.resetCode}`;
+      }
+
+      setAuthInfo(message);
+      setResetStep("reset");
+      setResetForm((prev) => ({ ...prev, email, code: "", newPassword: "", confirmPassword: "" }));
+    } catch (err) {
+      setAuthError(err.message || "发送重置码失败");
+    } finally {
+      setAuthPending(false);
+    }
+  }
+
+  async function onResetPassword(e) {
+    e.preventDefault();
+    setAuthError("");
+    setAuthInfo("");
+    setAuthPending(true);
+
+    try {
+      const email = normalizeEmail(resetForm.email);
+      const code = resetForm.code.trim();
+      const newPassword = resetForm.newPassword;
+
+      if (!email || !code || !newPassword) throw new Error("请填写完整信息");
+      if (newPassword.length < 6) throw new Error("新密码至少 6 位");
+      if (newPassword !== resetForm.confirmPassword) throw new Error("两次新密码不一致");
+
+      const data = await api("/api/auth/reset-password", {
+        method: "POST",
+        body: JSON.stringify({ email, code, newPassword }),
+      });
+
+      setAuthInfo(data.message || "密码已重置，请登录");
+      setAuthMode("login");
+      setAuthForm((prev) => ({ ...prev, email, password: "", confirmPassword: "" }));
+      setResetStep("request");
+      setResetForm({ email: "", code: "", newPassword: "", confirmPassword: "" });
+    } catch (err) {
+      setAuthError(err.message || "重置密码失败");
     } finally {
       setAuthPending(false);
     }
@@ -241,73 +323,156 @@ export default function App() {
             <h1>登录后管理你的装备清单</h1>
             <p className="muted">现在数据已保存到数据库，不再依赖浏览器本地存储。</p>
 
-            <div className="auth-tabs">
+            <div className="auth-tabs auth-tabs-3">
               <button
                 type="button"
                 className={`tab ${authMode === "login" ? "active" : ""}`}
-                onClick={() => {
-                  setAuthMode("login");
-                  setAuthError("");
-                }}
+                onClick={() => switchAuthMode("login")}
               >
                 登录
               </button>
               <button
                 type="button"
                 className={`tab ${authMode === "register" ? "active" : ""}`}
-                onClick={() => {
-                  setAuthMode("register");
-                  setAuthError("");
-                }}
+                onClick={() => switchAuthMode("register")}
               >
                 注册
               </button>
+              <button
+                type="button"
+                className={`tab ${authMode === "forgot" ? "active" : ""}`}
+                onClick={() => switchAuthMode("forgot")}
+              >
+                忘记密码
+              </button>
             </div>
 
-            <form className="item-form" onSubmit={onAuthSubmit}>
-              <label>
-                邮箱
-                <input
-                  type="email"
-                  autoComplete="email"
-                  required
-                  value={authForm.email}
-                  onChange={(e) => setAuthForm((prev) => ({ ...prev, email: e.target.value }))}
-                />
-              </label>
-
-              <label>
-                密码
-                <input
-                  type="password"
-                  autoComplete={authMode === "login" ? "current-password" : "new-password"}
-                  required
-                  value={authForm.password}
-                  onChange={(e) => setAuthForm((prev) => ({ ...prev, password: e.target.value }))}
-                />
-              </label>
-
-              {authMode === "register" && (
+            {(authMode === "login" || authMode === "register") && (
+              <form className="item-form" onSubmit={onAuthSubmit}>
                 <label>
-                  确认密码
+                  邮箱
+                  <input
+                    type="email"
+                    autoComplete="email"
+                    required
+                    value={authForm.email}
+                    onChange={(e) => setAuthForm((prev) => ({ ...prev, email: e.target.value }))}
+                  />
+                </label>
+
+                <label>
+                  密码
+                  <input
+                    type="password"
+                    autoComplete={authMode === "login" ? "current-password" : "new-password"}
+                    required
+                    value={authForm.password}
+                    onChange={(e) => setAuthForm((prev) => ({ ...prev, password: e.target.value }))}
+                  />
+                </label>
+
+                {authMode === "register" && (
+                  <label>
+                    确认密码
+                    <input
+                      type="password"
+                      autoComplete="new-password"
+                      required
+                      value={authForm.confirmPassword}
+                      onChange={(e) =>
+                        setAuthForm((prev) => ({ ...prev, confirmPassword: e.target.value }))
+                      }
+                    />
+                  </label>
+                )}
+
+                {authError && <p className="auth-error">{authError}</p>}
+                {authInfo && <p className="auth-info">{authInfo}</p>}
+
+                <button type="submit" disabled={authPending}>
+                  {authPending ? "处理中..." : authMode === "login" ? "登录" : "创建账号"}
+                </button>
+              </form>
+            )}
+
+            {authMode === "forgot" && resetStep === "request" && (
+              <form className="item-form" onSubmit={onRequestResetCode}>
+                <label>
+                  注册邮箱
+                  <input
+                    type="email"
+                    autoComplete="email"
+                    required
+                    value={resetForm.email}
+                    onChange={(e) => setResetForm((prev) => ({ ...prev, email: e.target.value }))}
+                  />
+                </label>
+
+                {authError && <p className="auth-error">{authError}</p>}
+                {authInfo && <p className="auth-info">{authInfo}</p>}
+
+                <button type="submit" disabled={authPending}>
+                  {authPending ? "处理中..." : "发送重置码"}
+                </button>
+              </form>
+            )}
+
+            {authMode === "forgot" && resetStep === "reset" && (
+              <form className="item-form" onSubmit={onResetPassword}>
+                <label>
+                  邮箱
+                  <input
+                    type="email"
+                    autoComplete="email"
+                    required
+                    value={resetForm.email}
+                    onChange={(e) => setResetForm((prev) => ({ ...prev, email: e.target.value }))}
+                  />
+                </label>
+                <label>
+                  6位重置码
+                  <input
+                    inputMode="numeric"
+                    pattern="[0-9]{6}"
+                    required
+                    value={resetForm.code}
+                    onChange={(e) => setResetForm((prev) => ({ ...prev, code: e.target.value }))}
+                  />
+                </label>
+                <label>
+                  新密码
                   <input
                     type="password"
                     autoComplete="new-password"
                     required
-                    value={authForm.confirmPassword}
+                    value={resetForm.newPassword}
+                    onChange={(e) => setResetForm((prev) => ({ ...prev, newPassword: e.target.value }))}
+                  />
+                </label>
+                <label>
+                  确认新密码
+                  <input
+                    type="password"
+                    autoComplete="new-password"
+                    required
+                    value={resetForm.confirmPassword}
                     onChange={(e) =>
-                      setAuthForm((prev) => ({ ...prev, confirmPassword: e.target.value }))
+                      setResetForm((prev) => ({ ...prev, confirmPassword: e.target.value }))
                     }
                   />
                 </label>
-              )}
 
-              {authError && <p className="auth-error">{authError}</p>}
+                {authError && <p className="auth-error">{authError}</p>}
+                {authInfo && <p className="auth-info">{authInfo}</p>}
 
-              <button type="submit" disabled={authPending}>
-                {authPending ? "处理中..." : authMode === "login" ? "登录" : "创建账号"}
-              </button>
-            </form>
+                <div className="auth-actions">
+                  <button type="button" className="ghost" onClick={() => setResetStep("request")}>重新获取重置码</button>
+                  <button type="submit" disabled={authPending}>
+                    {authPending ? "处理中..." : "重置密码"}
+                  </button>
+                </div>
+              </form>
+            )}
           </section>
         </main>
       </>

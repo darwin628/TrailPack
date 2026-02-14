@@ -42,8 +42,16 @@ git push -u origin main
 - `PGSSL=require`
 
 3. 保留原有 `JWT_SECRET`、`NODE_ENV`、`CORS_ORIGIN`。
-4. 点击 `Manual Deploy` 触发重启部署。
-5. 访问 `/api/health`，返回里 `db` 应为 `postgres`，表示已切换到持久化数据库。
+4. 配置忘记密码邮件（Resend）：
+
+- `RESEND_API_KEY=<你的 Resend API Key>`
+- `MAIL_FROM=TrailPack <noreply@你的域名>`
+- `APP_URL=https://trailpack.onrender.com`
+- 生产环境建议 `EXPOSE_RESET_CODE=false`
+
+5. 如果你暂时没有邮件服务，可临时改 `EXPOSE_RESET_CODE=true`（用于忘记密码时直接返回重置码，仅测试用）。
+6. 点击 `Manual Deploy` 触发重启部署。
+7. 访问 `/api/health`，返回里 `db` 应为 `postgres`，表示已切换到持久化数据库。
 
 ## 方案 B: Docker + 自己的云服务器
 

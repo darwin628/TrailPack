@@ -1,4 +1,5 @@
 import "dotenv/config";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,6 +16,56 @@ const jwtSecret = process.env.JWT_SECRET || "trailpack-dev-secret-change-me";
 const dbPath = process.env.DB_PATH || "./server/trailpack.db";
 const corsOrigin = process.env.CORS_ORIGIN || "*";
 const databaseUrl = process.env.DATABASE_URL || "";
+const exposeResetCode = process.env.EXPOSE_RESET_CODE === "true" || process.env.NODE_ENV !== "production";
+const resendApiKey = process.env.RESEND_API_KEY || "";
+const mailFrom = process.env.MAIL_FROM || "";
+const appUrl = process.env.APP_URL || "";
+
+function hashResetCode(code) {
+  return crypto.createHash("sha256").update(code).digest("hex");
+}
+
+function makeResetCode() {
+  return String(crypto.randomInt(100000, 1000000));
+}
+
+async function sendResetCodeEmail(toEmail, resetCode) {
+  if (!resendApiKey || !mailFrom) return { ok: false, reason: "not_configured" };
+
+  const safeAppUrl = appUrl ? `<p>你也可以直接访问：<a href="${appUrl}">${appUrl}</a></p>` : "";
+  const html = `
+    <div style="font-family:Arial,sans-serif;line-height:1.6;color:#1e2a26;">
+      <h2>TrailPack 密码重置</h2>
+      <p>你正在重置 TrailPack 账号密码。</p>
+      <p>你的 6 位重置码是：</p>
+      <p style="font-size:28px;font-weight:700;letter-spacing:4px;margin:8px 0;">${resetCode}</p>
+      <p>重置码 15 分钟内有效，请勿泄露给他人。</p>
+      ${safeAppUrl}
+    </div>
+  `;
+
+  const response = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${resendApiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      from: mailFrom,
+      to: [toEmail],
+      subject: "TrailPack 密码重置码",
+      html,
+    }),
+  });
+
+  if (!response.ok) {
+    const reason = await response.text().catch(() => "unknown");
+    console.error("Failed to send reset email:", reason);
+    return { ok: false, reason: "provider_error" };
+  }
+
+  return { ok: true };
+}
 
 async function createDbClient() {
   if (databaseUrl) {
@@ -41,6 +92,17 @@ async function createDbClient() {
         type TEXT NOT NULL,
         weight INTEGER NOT NULL,
         qty INTEGER NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS password_resets (
+        id BIGSERIAL PRIMARY KEY,
+        user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        code_hash TEXT NOT NULL,
+        expires_at TIMESTAMPTZ NOT NULL,
+        used_at TIMESTAMPTZ,
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
     `);
@@ -88,6 +150,48 @@ async function createDbClient() {
         const result = await pool.query("DELETE FROM items WHERE user_id = $1", [userId]);
         return result.rowCount;
       },
+      createPasswordReset: async (email) => {
+        const user = await pool.query("SELECT id FROM users WHERE email = $1 LIMIT 1", [email]);
+        if (!user.rows[0]) return null;
+
+        const code = makeResetCode();
+        const codeHash = hashResetCode(code);
+        await pool.query(
+          "INSERT INTO password_resets (user_id, code_hash, expires_at) VALUES ($1, $2, NOW() + INTERVAL '15 minutes')",
+          [user.rows[0].id, codeHash]
+        );
+        return code;
+      },
+      resetPasswordWithCode: async (email, code, passwordHash) => {
+        const userRes = await pool.query(
+          "SELECT id FROM users WHERE email = $1 LIMIT 1",
+          [email]
+        );
+        const user = userRes.rows[0];
+        if (!user) return false;
+
+        const codeHash = hashResetCode(code);
+        const resetRes = await pool.query(
+          "SELECT id FROM password_resets WHERE user_id = $1 AND code_hash = $2 AND used_at IS NULL AND expires_at > NOW() ORDER BY created_at DESC LIMIT 1",
+          [user.id, codeHash]
+        );
+        const reset = resetRes.rows[0];
+        if (!reset) return false;
+
+        const client = await pool.connect();
+        try {
+          await client.query("BEGIN");
+          await client.query("UPDATE users SET password_hash = $1 WHERE id = $2", [passwordHash, user.id]);
+          await client.query("UPDATE password_resets SET used_at = NOW() WHERE user_id = $1 AND used_at IS NULL", [user.id]);
+          await client.query("COMMIT");
+          return true;
+        } catch {
+          await client.query("ROLLBACK");
+          return false;
+        } finally {
+          client.release();
+        }
+      },
     };
   }
 
@@ -111,6 +215,16 @@ async function createDbClient() {
       type TEXT NOT NULL,
       weight INTEGER NOT NULL,
       qty INTEGER NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS password_resets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      code_hash TEXT NOT NULL,
+      expires_at DATETIME NOT NULL,
+      used_at DATETIME,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
     );
@@ -157,6 +271,43 @@ async function createDbClient() {
     clearItems: async (userId) => {
       const result = sqlite.prepare("DELETE FROM items WHERE user_id = ?").run(userId);
       return result.changes;
+    },
+    createPasswordReset: async (email) => {
+      const user = sqlite.prepare("SELECT id FROM users WHERE email = ?").get(email);
+      if (!user) return null;
+
+      const code = makeResetCode();
+      const codeHash = hashResetCode(code);
+      sqlite
+        .prepare(
+          "INSERT INTO password_resets (user_id, code_hash, expires_at) VALUES (?, ?, datetime('now', '+15 minutes'))"
+        )
+        .run(user.id, codeHash);
+      return code;
+    },
+    resetPasswordWithCode: async (email, code, passwordHash) => {
+      const user = sqlite.prepare("SELECT id FROM users WHERE email = ?").get(email);
+      if (!user) return false;
+
+      const codeHash = hashResetCode(code);
+      const reset = sqlite
+        .prepare(
+          "SELECT id FROM password_resets WHERE user_id = ? AND code_hash = ? AND used_at IS NULL AND expires_at > datetime('now') ORDER BY created_at DESC LIMIT 1"
+        )
+        .get(user.id, codeHash);
+      if (!reset) return false;
+
+      const updateUser = sqlite.prepare("UPDATE users SET password_hash = ? WHERE id = ?");
+      const invalidateCodes = sqlite.prepare(
+        "UPDATE password_resets SET used_at = datetime('now') WHERE user_id = ? AND used_at IS NULL"
+      );
+
+      const tx = sqlite.transaction(() => {
+        updateUser.run(passwordHash, user.id);
+        invalidateCodes.run(user.id);
+      });
+      tx();
+      return true;
     },
   };
 }
@@ -243,6 +394,64 @@ async function main() {
       return res.json({ token, user: { id: Number(user.id), email: user.email } });
     } catch {
       return res.status(500).json({ error: "登录失败" });
+    }
+  });
+
+  app.post("/api/auth/forgot-password", async (req, res) => {
+    try {
+      const email = normalizeEmail(req.body?.email);
+      if (!email) {
+        return res.status(400).json({ error: "请输入邮箱" });
+      }
+
+      const resetCode = await db.createPasswordReset(email);
+      const message = "如果该邮箱已注册，我们已发送重置码（有效期 15 分钟）";
+
+      if (resetCode && !exposeResetCode) {
+        const mailResult = await sendResetCodeEmail(email, resetCode);
+        if (!mailResult.ok && mailResult.reason === "not_configured") {
+          return res.status(500).json({ error: "服务端未配置邮件发送，请联系管理员" });
+        }
+        if (!mailResult.ok) {
+          return res.status(500).json({ error: "重置邮件发送失败，请稍后重试" });
+        }
+      }
+
+      if (resetCode && exposeResetCode) {
+        return res.json({ ok: true, message, resetCode });
+      }
+
+      return res.json({ ok: true, message });
+    } catch {
+      return res.status(500).json({ error: "发送重置码失败" });
+    }
+  });
+
+  app.post("/api/auth/reset-password", async (req, res) => {
+    try {
+      const email = normalizeEmail(req.body?.email);
+      const code = String(req.body?.code || "").trim();
+      const newPassword = req.body?.newPassword || "";
+
+      if (!email || !code || !newPassword) {
+        return res.status(400).json({ error: "请填写完整信息" });
+      }
+      if (!/^\d{6}$/.test(code)) {
+        return res.status(400).json({ error: "重置码应为 6 位数字" });
+      }
+      if (newPassword.length < 6) {
+        return res.status(400).json({ error: "新密码至少 6 位" });
+      }
+
+      const passwordHash = bcrypt.hashSync(newPassword, 10);
+      const ok = await db.resetPasswordWithCode(email, code, passwordHash);
+      if (!ok) {
+        return res.status(400).json({ error: "重置码无效或已过期" });
+      }
+
+      return res.json({ ok: true, message: "密码已重置，请使用新密码登录" });
+    } catch {
+      return res.status(500).json({ error: "重置密码失败" });
     }
   });
 
