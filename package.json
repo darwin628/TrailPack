@@ -1,0 +1,31 @@
+{
+  "name": "trailpack",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:server": "node --watch server/index.js",
+    "dev:full": "concurrently -k \"npm run dev:server\" \"npm run dev\"",
+    "build": "vite build",
+    "build:full": "npm run build",
+    "preview": "vite preview",
+    "start": "node server/index.js",
+    "start:server": "node server/index.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "better-sqlite3": "^12.6.2",
+    "cors": "^2.8.6",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "jsonwebtoken": "^9.0.3",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^5.0.3",
+    "concurrently": "^9.2.1",
+    "vite": "^7.1.3"
+  }
+}
