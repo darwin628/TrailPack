@@ -3,8 +3,9 @@ import { useEffect, useMemo, useState } from "react";
 const TOKEN_KEY = "trailpack.auth.token.v1";
 const LIST_KEY = "trailpack.active.list.v1";
 const API_BASE = import.meta.env.VITE_API_BASE || "";
+const CUSTOM_CATEGORY_VALUE = "__custom__";
 
-const categories = [
+const defaultCategories = [
   "背包系统",
   "睡眠系统",
   "衣物",
@@ -60,6 +61,7 @@ export default function App() {
   const [lists, setLists] = useState([]);
   const [activeListId, setActiveListId] = useState(0);
   const [items, setItems] = useState([]);
+  const [categoryCatalog, setCategoryCatalog] = useState([]);
   const [authChecking, setAuthChecking] = useState(true);
 
   const [authMode, setAuthMode] = useState("login");
@@ -77,7 +79,7 @@ export default function App() {
 
   const [form, setForm] = useState({
     name: "",
-    category: categories[0],
+    category: defaultCategories[0],
     type: "base",
     weight: "",
     qty: "1",
@@ -88,6 +90,27 @@ export default function App() {
   const currentList = useMemo(() => {
     return lists.find((it) => Number(it.id) === Number(activeListId)) || null;
   }, [lists, activeListId]);
+
+  const categoryOptions = useMemo(() => {
+    const merged = new Set(defaultCategories);
+    for (const category of categoryCatalog) {
+      const text = String(category || "").trim();
+      if (text) merged.add(text);
+    }
+    for (const item of items) {
+      const category = String(item.category || "").trim();
+      if (category) merged.add(category);
+    }
+    const current = String(form.category || "").trim();
+    if (current) merged.add(current);
+    return Array.from(merged);
+  }, [categoryCatalog, items, form.category]);
+
+  async function refreshCategories(authToken = token) {
+    if (!authToken) return;
+    const data = await api("/api/categories", {}, authToken);
+    setCategoryCatalog(data.categories || []);
+  }
 
   const totals = useMemo(() => {
     const total = items.reduce((sum, item) => sum + itemTotal(item), 0);
@@ -128,7 +151,11 @@ export default function App() {
       }
 
       try {
-        const [meData, listData] = await Promise.all([api("/api/auth/me", {}, token), api("/api/lists", {}, token)]);
+        const [meData, listData] = await Promise.all([
+          api("/api/auth/me", {}, token),
+          api("/api/lists", {}, token),
+          refreshCategories(token),
+        ]);
         setSession(meData.user);
 
         const nextLists = listData.lists || [];
@@ -151,6 +178,7 @@ export default function App() {
         setLists([]);
         setActiveListId(0);
         setItems([]);
+        setCategoryCatalog([]);
       } finally {
         setAuthChecking(false);
       }
@@ -361,6 +389,7 @@ export default function App() {
     setLists([]);
     setActiveListId(0);
     setItems([]);
+    setCategoryCatalog([]);
     setAppError("");
   }
 
@@ -395,6 +424,7 @@ export default function App() {
         token
       );
       setItems((prev) => [data.item, ...prev]);
+      await refreshCategories();
       setForm((prev) => ({ ...prev, name: "", weight: "", qty: "1" }));
     } catch (err) {
       setAppError(err.message || "添加失败");
@@ -406,6 +436,7 @@ export default function App() {
     try {
       await api(`/api/items/${id}`, { method: "DELETE" }, token);
       setItems((prev) => prev.filter((item) => item.id !== id));
+      await refreshCategories();
     } catch (err) {
       setAppError(err.message || "删除失败");
     }
@@ -420,6 +451,7 @@ export default function App() {
     try {
       await api(`/api/items?listId=${activeListId}`, { method: "DELETE" }, token);
       setItems([]);
+      await refreshCategories();
     } catch (err) {
       setAppError(err.message || "清空失败");
     }
@@ -588,8 +620,8 @@ export default function App() {
           </div>
 
           {currentList && (
-            <p className="muted current-list-tip">
-              当前正在编辑: {currentList.name}
+            <p className="current-list-tip">
+              当前正在编辑: <strong>{currentList.name}</strong>
             </p>
           )}
         </section>
@@ -606,12 +638,30 @@ export default function App() {
               </label>
 
               <div className="row">
-                <label>
+                <label className="category-field">
                   分类
-                  <select value={form.category} onChange={(e) => setForm((prev) => ({ ...prev, category: e.target.value }))}>
-                    {categories.map((cat) => (
-                      <option key={cat}>{cat}</option>
+                  <select
+                    value={categoryOptions.includes(form.category) ? form.category : CUSTOM_CATEGORY_VALUE}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      if (next !== CUSTOM_CATEGORY_VALUE) {
+                        setForm((prev) => ({ ...prev, category: next }));
+                        return;
+                      }
+
+                      const custom = window.prompt("输入新分类名称", "");
+                      if (!custom) return;
+                      const name = custom.trim().slice(0, 20);
+                      if (!name) return;
+
+                      setCategoryCatalog((prev) => (prev.includes(name) ? prev : [...prev, name]));
+                      setForm((prev) => ({ ...prev, category: name }));
+                    }}
+                  >
+                    {categoryOptions.map((cat) => (
+                      <option key={cat} value={cat}>{cat}</option>
                     ))}
+                    <option value={CUSTOM_CATEGORY_VALUE}>+ 新建分类...</option>
                   </select>
                 </label>
                 <label>

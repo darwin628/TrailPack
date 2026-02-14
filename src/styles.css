@@ -155,6 +155,13 @@ h2 {
 
 .current-list-tip {
   margin-top: 10px;
+  margin-bottom: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(15, 138, 104, 0.2);
+  background: rgba(15, 138, 104, 0.08);
+  color: #0b6e53;
+  font-size: 13px;
 }
 
 .active-list-badge {
@@ -204,6 +211,10 @@ select {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 10px;
+}
+
+.category-field {
+  align-content: start;
 }
 
 button {

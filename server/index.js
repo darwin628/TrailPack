@@ -324,6 +324,14 @@ async function createPostgresDb() {
       const result = await pool.query("DELETE FROM items WHERE user_id = $1 AND list_id = $2", [userId, listId]);
       return result.rowCount;
     },
+
+    listCategories: async (userId) => {
+      const { rows } = await pool.query(
+        "SELECT DISTINCT category FROM items WHERE user_id = $1 AND category IS NOT NULL AND category <> '' ORDER BY category ASC",
+        [userId]
+      );
+      return rows.map((r) => r.category);
+    },
   };
 }
 
@@ -533,6 +541,15 @@ function createSqliteDb() {
       const result = sqlite.prepare("DELETE FROM items WHERE user_id = ? AND list_id = ?").run(userId, listId);
       return result.changes;
     },
+
+    listCategories: async (userId) => {
+      const rows = sqlite
+        .prepare(
+          "SELECT DISTINCT category FROM items WHERE user_id = ? AND category IS NOT NULL AND TRIM(category) <> '' ORDER BY category ASC"
+        )
+        .all(userId);
+      return rows.map((r) => r.category);
+    },
   };
 }
 
@@ -650,6 +667,16 @@ async function main() {
       return res.json({ lists, defaultListId: Number(defaultList.id) });
     } catch {
       return res.status(500).json({ error: "获取行程清单失败" });
+    }
+  });
+
+  app.get("/api/categories", authRequired, async (req, res) => {
+    try {
+      const userId = Number(req.user.sub);
+      const categories = await db.listCategories(userId);
+      return res.json({ categories });
+    } catch {
+      return res.status(500).json({ error: "获取分类失败" });
     }
   });
 
