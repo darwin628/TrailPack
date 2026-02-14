@@ -19,16 +19,18 @@ git push -u origin main
 
 1. 打开 Render 控制台，新建 `Web Service`。
 2. 选择你的 GitHub 仓库。
-3. Render 会自动读取仓库根目录的 `render.yaml`。
+3. 也可以不依赖 Blueprint，直接在页面填写构建命令和启动命令。
 4. 点击创建并等待构建完成。
 
-### 3. 关键配置（已在 `render.yaml` 中定义）
+### 3. 关键配置（Free 方案）
 
 - Build Command: `npm ci && npm run build`
 - Start Command: `npm start`
 - Health Check: `/api/health`
-- 持久化磁盘挂载: `/var/data`
-- SQLite 文件: `/var/data/trailpack.db`
+- SQLite 文件: `/tmp/trailpack.db`
+
+说明：Render Free 实例文件系统是临时的，服务重启后 SQLite 数据可能丢失。
+如果你需要长期保留数据，建议升级付费磁盘或改用托管 Postgres。
 
 部署成功后，会得到一个 `https://xxxx.onrender.com` 链接，其他人可直接访问。
 
