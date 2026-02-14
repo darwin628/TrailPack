@@ -68,8 +68,8 @@ body {
   padding: 24px;
   display: flex;
   justify-content: space-between;
+  align-items: flex-start;
   gap: 20px;
-  position: relative;
 }
 
 .eyebrow {
@@ -106,9 +106,8 @@ h2 {
 }
 
 .hero-actions {
-  position: absolute;
-  right: 20px;
-  top: 20px;
+  display: flex;
+  align-items: flex-start;
 }
 
 .metric {

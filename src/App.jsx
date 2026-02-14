@@ -627,7 +627,7 @@ export default function App() {
             <p className="muted">为不同路线维护独立装备清单，重量统计互不干扰。</p>
             <p className="muted user-pill">当前用户: {session.email}</p>
             <p className="active-list-badge">
-              当前清单: {currentList ? currentList.name : "未选择"}
+              当前正在编辑: {currentList ? currentList.name : "未选择"}
             </p>
           </div>
           <div className="hero-metrics">
@@ -659,7 +659,7 @@ export default function App() {
 
           <div className="list-manager-grid">
             <label>
-              当前清单
+              选择清单
               <select value={activeListId || ""} onChange={(e) => onSwitchList(Number(e.target.value))}>
                 {lists.map((it) => (
                   <option key={it.id} value={it.id}>
@@ -675,11 +675,6 @@ export default function App() {
             <button type="button" onClick={onCreateList} disabled={listPending}>{listPending ? "处理中..." : "创建新清单"}</button>
           </div>
 
-          {currentList && (
-            <p className="current-list-tip">
-              当前正在编辑: <strong>{currentList.name}</strong>
-            </p>
-          )}
         </section>
 
         {appError && <p className="app-error">{appError}</p>}
