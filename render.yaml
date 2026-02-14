@@ -2,7 +2,7 @@ services:
   - type: web
     name: trailpack
     runtime: node
-    plan: starter
+    plan: free
     buildCommand: npm ci && npm run build
     startCommand: npm start
     healthCheckPath: /api/health
@@ -14,8 +14,4 @@ services:
       - key: CORS_ORIGIN
         value: "*"
       - key: DB_PATH
-        value: /var/data/trailpack.db
-    disk:
-      name: trailpack-data
-      mountPath: /var/data
-      sizeGB: 1
+        value: /tmp/trailpack.db
