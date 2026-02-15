@@ -128,6 +128,7 @@ async function createPostgresDb() {
       user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       list_id BIGINT,
       name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
       category TEXT NOT NULL,
       type TEXT NOT NULL,
       weight INTEGER NOT NULL,
@@ -137,6 +138,7 @@ async function createPostgresDb() {
   `);
 
   await pool.query("ALTER TABLE items ADD COLUMN IF NOT EXISTS list_id BIGINT");
+  await pool.query("ALTER TABLE items ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT ''");
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS password_resets (
@@ -154,6 +156,7 @@ async function createPostgresDb() {
       id BIGSERIAL PRIMARY KEY,
       user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
       category TEXT NOT NULL,
       type TEXT NOT NULL,
       weight INTEGER NOT NULL,
@@ -162,6 +165,7 @@ async function createPostgresDb() {
       UNIQUE(user_id, name, category, type, weight)
     );
   `);
+  await pool.query("ALTER TABLE gear_library ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT ''");
 
   return {
     driver: "postgres",
@@ -243,15 +247,15 @@ async function createPostgresDb() {
 
         for (const item of defaultSeedItems) {
           await pool.query(
-            `INSERT INTO gear_library (user_id, name, category, type, weight, default_qty)
-             VALUES ($1, $2, $3, $4, $5, $6)
+            `INSERT INTO gear_library (user_id, name, description, category, type, weight, default_qty)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
              ON CONFLICT (user_id, name, category, type, weight)
              DO UPDATE SET default_qty = EXCLUDED.default_qty`,
-            [userId, item.name, item.category, item.type, item.weight, item.qty]
+            [userId, item.name, "", item.category, item.type, item.weight, item.qty]
           );
           await pool.query(
-            "INSERT INTO items (user_id, list_id, name, category, type, weight, qty) VALUES ($1, $2, $3, $4, $5, $6, $7)",
-            [userId, list.id, item.name, item.category, item.type, item.weight, item.qty]
+            "INSERT INTO items (user_id, list_id, name, description, category, type, weight, qty) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+            [userId, list.id, item.name, "", item.category, item.type, item.weight, item.qty]
           );
         }
       }
@@ -322,7 +326,7 @@ async function createPostgresDb() {
 
     listItems: async (userId, listId) => {
       const { rows } = await pool.query(
-        "SELECT id, name, category, type, weight, qty FROM items WHERE user_id = $1 AND list_id = $2 ORDER BY id DESC",
+        "SELECT id, name, description, category, type, weight, qty FROM items WHERE user_id = $1 AND list_id = $2 ORDER BY id DESC",
         [userId, listId]
       );
       return rows;
@@ -330,15 +334,15 @@ async function createPostgresDb() {
 
     createItem: async (userId, listId, item) => {
       const { rows } = await pool.query(
-        "INSERT INTO items (user_id, list_id, name, category, type, weight, qty) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, name, category, type, weight, qty",
-        [userId, listId, item.name, item.category, item.type, item.weight, item.qty]
+        "INSERT INTO items (user_id, list_id, name, description, category, type, weight, qty) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, name, description, category, type, weight, qty",
+        [userId, listId, item.name, item.description || "", item.category, item.type, item.weight, item.qty]
       );
       return rows[0];
     },
 
     getItemById: async (id, userId) => {
       const { rows } = await pool.query(
-        "SELECT id, name, category, type, weight, qty FROM items WHERE id = $1 AND user_id = $2 LIMIT 1",
+        "SELECT id, name, description, category, type, weight, qty FROM items WHERE id = $1 AND user_id = $2 LIMIT 1",
         [id, userId]
       );
       return rows[0] || null;
@@ -346,15 +350,47 @@ async function createPostgresDb() {
 
     updateItemType: async (id, userId, type) => {
       const { rows } = await pool.query(
-        "UPDATE items SET type = $1 WHERE id = $2 AND user_id = $3 RETURNING id, name, category, type, weight, qty",
+        "UPDATE items SET type = $1 WHERE id = $2 AND user_id = $3 RETURNING id, name, description, category, type, weight, qty",
         [type, id, userId]
       );
       return rows[0] || null;
     },
 
+    updateItemCategory: async (id, userId, category) => {
+      const { rows } = await pool.query(
+        "UPDATE items SET category = $1 WHERE id = $2 AND user_id = $3 RETURNING id, name, description, category, type, weight, qty",
+        [category, id, userId]
+      );
+      return rows[0] || null;
+    },
+
+    updateItemDescriptionAndSync: async (id, userId, description) => {
+      const current = await pool.query(
+        "SELECT id, name, description, category, type, weight, qty FROM items WHERE id = $1 AND user_id = $2 LIMIT 1",
+        [id, userId]
+      );
+      const item = current.rows[0];
+      if (!item) return null;
+
+      await pool.query(
+        "UPDATE items SET description = $1 WHERE user_id = $2 AND name = $3 AND type = $4 AND weight = $5",
+        [description, userId, item.name, item.type, item.weight]
+      );
+      await pool.query(
+        "UPDATE gear_library SET description = $1 WHERE user_id = $2 AND name = $3 AND type = $4 AND weight = $5",
+        [description, userId, item.name, item.type, item.weight]
+      );
+
+      const updated = await pool.query(
+        "SELECT id, name, description, category, type, weight, qty FROM items WHERE id = $1 AND user_id = $2 LIMIT 1",
+        [id, userId]
+      );
+      return updated.rows[0] || null;
+    },
+
     updateItemWeightAndSync: async (id, userId, weight) => {
       const current = await pool.query(
-        "SELECT id, name, category, type, weight, qty FROM items WHERE id = $1 AND user_id = $2 LIMIT 1",
+        "SELECT id, name, description, category, type, weight, qty FROM items WHERE id = $1 AND user_id = $2 LIMIT 1",
         [id, userId]
       );
       const item = current.rows[0];
@@ -371,12 +407,12 @@ async function createPostgresDb() {
         );
 
         const merged = await client.query(
-          `INSERT INTO gear_library (user_id, name, category, type, weight, default_qty)
-           VALUES ($1, $2, $3, $4, $5, $6)
+          `INSERT INTO gear_library (user_id, name, description, category, type, weight, default_qty)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
            ON CONFLICT (user_id, name, category, type, weight)
-           DO UPDATE SET default_qty = GREATEST(gear_library.default_qty, EXCLUDED.default_qty)
+           DO UPDATE SET default_qty = GREATEST(gear_library.default_qty, EXCLUDED.default_qty), description = EXCLUDED.description
            RETURNING id`,
-          [userId, item.name, item.category, item.type, weight, item.qty]
+          [userId, item.name, item.description || "", item.category, item.type, weight, item.qty]
         );
         if (merged.rows[0]?.id) {
           await client.query(
@@ -399,7 +435,7 @@ async function createPostgresDb() {
       }
 
       const updated = await pool.query(
-        "SELECT id, name, category, type, weight, qty FROM items WHERE id = $1 AND user_id = $2 LIMIT 1",
+        "SELECT id, name, description, category, type, weight, qty FROM items WHERE id = $1 AND user_id = $2 LIMIT 1",
         [id, userId]
       );
       return updated.rows[0] || null;
@@ -425,12 +461,12 @@ async function createPostgresDb() {
 
     upsertGear: async (userId, gear) => {
       const { rows } = await pool.query(
-        `INSERT INTO gear_library (user_id, name, category, type, weight, default_qty)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        `INSERT INTO gear_library (user_id, name, description, category, type, weight, default_qty)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          ON CONFLICT (user_id, name, category, type, weight)
-         DO UPDATE SET default_qty = EXCLUDED.default_qty
-         RETURNING id, name, category, type, weight, default_qty`,
-        [userId, gear.name, gear.category, gear.type, gear.weight, gear.defaultQty]
+         DO UPDATE SET default_qty = EXCLUDED.default_qty, description = EXCLUDED.description
+         RETURNING id, name, description, category, type, weight, default_qty`,
+        [userId, gear.name, gear.description || "", gear.category, gear.type, gear.weight, gear.defaultQty]
       );
       return rows[0];
     },
@@ -438,7 +474,7 @@ async function createPostgresDb() {
     listGears: async (userId, listId) => {
       const { rows } = await pool.query(
         `SELECT
-           g.id, g.name, g.category, g.type, g.weight, g.default_qty AS "defaultQty",
+           g.id, g.name, g.description, g.category, g.type, g.weight, g.default_qty AS "defaultQty",
            EXISTS (
              SELECT 1 FROM items i
              WHERE i.user_id = g.user_id
@@ -458,7 +494,7 @@ async function createPostgresDb() {
 
     getGearById: async (userId, gearId) => {
       const { rows } = await pool.query(
-        "SELECT id, name, category, type, weight, default_qty AS \"defaultQty\" FROM gear_library WHERE user_id = $1 AND id = $2 LIMIT 1",
+        "SELECT id, name, description, category, type, weight, default_qty AS \"defaultQty\" FROM gear_library WHERE user_id = $1 AND id = $2 LIMIT 1",
         [userId, gearId]
       );
       return rows[0] || null;
@@ -502,6 +538,7 @@ function createSqliteDb() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,
       name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
       category TEXT NOT NULL,
       type TEXT NOT NULL,
       weight INTEGER NOT NULL,
@@ -524,6 +561,7 @@ function createSqliteDb() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,
       name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
       category TEXT NOT NULL,
       type TEXT NOT NULL,
       weight INTEGER NOT NULL,
@@ -536,6 +574,12 @@ function createSqliteDb() {
 
   if (!sqliteHasColumn(sqlite, "items", "list_id")) {
     sqlite.exec("ALTER TABLE items ADD COLUMN list_id INTEGER");
+  }
+  if (!sqliteHasColumn(sqlite, "items", "description")) {
+    sqlite.exec("ALTER TABLE items ADD COLUMN description TEXT NOT NULL DEFAULT ''");
+  }
+  if (!sqliteHasColumn(sqlite, "gear_library", "description")) {
+    sqlite.exec("ALTER TABLE gear_library ADD COLUMN description TEXT NOT NULL DEFAULT ''");
   }
 
   return {
@@ -603,16 +647,16 @@ function createSqliteDb() {
         list = { id: Number(result.lastInsertRowid), name: defaultListName };
 
         const insertSeedItem = sqlite.prepare(
-          "INSERT INTO items (user_id, list_id, name, category, type, weight, qty) VALUES (?, ?, ?, ?, ?, ?, ?)"
+          "INSERT INTO items (user_id, list_id, name, description, category, type, weight, qty) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
         );
         const upsertSeedGear = sqlite.prepare(
-          `INSERT INTO gear_library (user_id, name, category, type, weight, default_qty)
-           VALUES (?, ?, ?, ?, ?, ?)
+          `INSERT INTO gear_library (user_id, name, description, category, type, weight, default_qty)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(user_id, name, category, type, weight) DO UPDATE SET default_qty = excluded.default_qty`
         );
         for (const item of defaultSeedItems) {
-          upsertSeedGear.run(userId, item.name, item.category, item.type, item.weight, item.qty);
-          insertSeedItem.run(userId, list.id, item.name, item.category, item.type, item.weight, item.qty);
+          upsertSeedGear.run(userId, item.name, "", item.category, item.type, item.weight, item.qty);
+          insertSeedItem.run(userId, list.id, item.name, "", item.category, item.type, item.weight, item.qty);
         }
       }
 
@@ -644,7 +688,7 @@ function createSqliteDb() {
     clonePackList: async (userId, sourceListId, name) => {
       const insertList = sqlite.prepare("INSERT INTO pack_lists (user_id, name, destination) VALUES (?, ?, ?)");
       const copyItems = sqlite.prepare(
-        "INSERT INTO items (user_id, list_id, name, category, type, weight, qty) SELECT user_id, ?, name, category, type, weight, qty FROM items WHERE user_id = ? AND list_id = ?"
+        "INSERT INTO items (user_id, list_id, name, description, category, type, weight, qty) SELECT user_id, ?, name, description, category, type, weight, qty FROM items WHERE user_id = ? AND list_id = ?"
       );
 
       const tx = sqlite.transaction(() => {
@@ -671,7 +715,7 @@ function createSqliteDb() {
     listItems: async (userId, listId) => {
       return sqlite
         .prepare(
-          "SELECT id, name, category, type, weight, qty FROM items WHERE user_id = ? AND list_id = ? ORDER BY id DESC"
+          "SELECT id, name, description, category, type, weight, qty FROM items WHERE user_id = ? AND list_id = ? ORDER BY id DESC"
         )
         .all(userId, listId);
     },
@@ -679,18 +723,18 @@ function createSqliteDb() {
     createItem: async (userId, listId, item) => {
       const result = sqlite
         .prepare(
-          "INSERT INTO items (user_id, list_id, name, category, type, weight, qty) VALUES (?, ?, ?, ?, ?, ?, ?)"
+          "INSERT INTO items (user_id, list_id, name, description, category, type, weight, qty) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
         )
-        .run(userId, listId, item.name, item.category, item.type, item.weight, item.qty);
+        .run(userId, listId, item.name, item.description || "", item.category, item.type, item.weight, item.qty);
       return sqlite
-        .prepare("SELECT id, name, category, type, weight, qty FROM items WHERE id = ?")
+        .prepare("SELECT id, name, description, category, type, weight, qty FROM items WHERE id = ?")
         .get(result.lastInsertRowid);
     },
 
     getItemById: async (id, userId) => {
       return (
         sqlite
-          .prepare("SELECT id, name, category, type, weight, qty FROM items WHERE id = ? AND user_id = ?")
+          .prepare("SELECT id, name, description, category, type, weight, qty FROM items WHERE id = ? AND user_id = ?")
           .get(id, userId) || null
       );
     },
@@ -701,13 +745,45 @@ function createSqliteDb() {
         .run(type, id, userId);
       if (!result.changes) return null;
       return sqlite
-        .prepare("SELECT id, name, category, type, weight, qty FROM items WHERE id = ?")
+        .prepare("SELECT id, name, description, category, type, weight, qty FROM items WHERE id = ?")
         .get(id);
+    },
+
+    updateItemCategory: async (id, userId, category) => {
+      const result = sqlite
+        .prepare("UPDATE items SET category = ? WHERE id = ? AND user_id = ?")
+        .run(category, id, userId);
+      if (!result.changes) return null;
+      return sqlite
+        .prepare("SELECT id, name, description, category, type, weight, qty FROM items WHERE id = ?")
+        .get(id);
+    },
+
+    updateItemDescriptionAndSync: async (id, userId, description) => {
+      const item = sqlite
+        .prepare("SELECT id, name, description, category, type, weight, qty FROM items WHERE id = ? AND user_id = ?")
+        .get(id, userId);
+      if (!item) return null;
+
+      sqlite
+        .prepare(
+          "UPDATE items SET description = ? WHERE user_id = ? AND name = ? AND type = ? AND weight = ?"
+        )
+        .run(description, userId, item.name, item.type, item.weight);
+      sqlite
+        .prepare(
+          "UPDATE gear_library SET description = ? WHERE user_id = ? AND name = ? AND type = ? AND weight = ?"
+        )
+        .run(description, userId, item.name, item.type, item.weight);
+
+      return sqlite
+        .prepare("SELECT id, name, description, category, type, weight, qty FROM items WHERE id = ? AND user_id = ?")
+        .get(id, userId);
     },
 
     updateItemWeightAndSync: async (id, userId, weight) => {
       const item = sqlite
-        .prepare("SELECT id, name, category, type, weight, qty FROM items WHERE id = ? AND user_id = ?")
+        .prepare("SELECT id, name, description, category, type, weight, qty FROM items WHERE id = ? AND user_id = ?")
         .get(id, userId);
       if (!item) return null;
 
@@ -729,11 +805,11 @@ function createSqliteDb() {
         if (!existing) {
           sqlite
             .prepare(
-              `INSERT INTO gear_library (user_id, name, category, type, weight, default_qty)
-               VALUES (?, ?, ?, ?, ?, ?)
-               ON CONFLICT(user_id, name, category, type, weight) DO UPDATE SET default_qty = MAX(default_qty, excluded.default_qty)`
+              `INSERT INTO gear_library (user_id, name, description, category, type, weight, default_qty)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(user_id, name, category, type, weight) DO UPDATE SET default_qty = MAX(default_qty, excluded.default_qty), description = excluded.description`
             )
-            .run(userId, item.name, item.category, item.type, weight, item.qty);
+            .run(userId, item.name, item.description || "", item.category, item.type, weight, item.qty);
         }
 
         sqlite
@@ -745,7 +821,7 @@ function createSqliteDb() {
       tx();
 
       return sqlite
-        .prepare("SELECT id, name, category, type, weight, qty FROM items WHERE id = ? AND user_id = ?")
+        .prepare("SELECT id, name, description, category, type, weight, qty FROM items WHERE id = ? AND user_id = ?")
         .get(id, userId);
     },
 
@@ -771,16 +847,16 @@ function createSqliteDb() {
     upsertGear: async (userId, gear) => {
       sqlite
         .prepare(
-          `INSERT INTO gear_library (user_id, name, category, type, weight, default_qty)
-           VALUES (?, ?, ?, ?, ?, ?)
-           ON CONFLICT(user_id, name, category, type, weight) DO UPDATE SET default_qty = excluded.default_qty`
+          `INSERT INTO gear_library (user_id, name, description, category, type, weight, default_qty)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(user_id, name, category, type, weight) DO UPDATE SET default_qty = excluded.default_qty, description = excluded.description`
         )
-        .run(userId, gear.name, gear.category, gear.type, gear.weight, gear.defaultQty);
+        .run(userId, gear.name, gear.description || "", gear.category, gear.type, gear.weight, gear.defaultQty);
 
       return (
         sqlite
           .prepare(
-            "SELECT id, name, category, type, weight, default_qty AS defaultQty FROM gear_library WHERE user_id = ? AND name = ? AND category = ? AND type = ? AND weight = ?"
+            "SELECT id, name, description, category, type, weight, default_qty AS defaultQty FROM gear_library WHERE user_id = ? AND name = ? AND category = ? AND type = ? AND weight = ?"
           )
           .get(userId, gear.name, gear.category, gear.type, gear.weight) || null
       );
@@ -790,7 +866,7 @@ function createSqliteDb() {
       return sqlite
         .prepare(
           `SELECT
-             g.id, g.name, g.category, g.type, g.weight, g.default_qty AS defaultQty,
+             g.id, g.name, g.description, g.category, g.type, g.weight, g.default_qty AS defaultQty,
              EXISTS (
                SELECT 1 FROM items i
                WHERE i.user_id = g.user_id
@@ -812,7 +888,7 @@ function createSqliteDb() {
       return (
         sqlite
           .prepare(
-            "SELECT id, name, category, type, weight, default_qty AS defaultQty FROM gear_library WHERE user_id = ? AND id = ?"
+            "SELECT id, name, description, category, type, weight, default_qty AS defaultQty FROM gear_library WHERE user_id = ? AND id = ?"
           )
           .get(userId, gearId) || null
       );
@@ -968,6 +1044,7 @@ async function main() {
     try {
       const userId = Number(req.user.sub);
       const name = String(req.body?.name || "").trim();
+      const description = String(req.body?.description || "").trim().slice(0, 80);
       const category = String(req.body?.category || "").trim();
       const type = String(req.body?.type || "").trim();
       const weight = Number(req.body?.weight);
@@ -981,6 +1058,7 @@ async function main() {
 
       const gear = await db.upsertGear(userId, {
         name,
+        description,
         category,
         type,
         weight: Math.round(weight),
@@ -1010,6 +1088,7 @@ async function main() {
 
       const item = await db.createItem(userId, listId, {
         name: gear.name,
+        description: gear.description || "",
         category: gear.category,
         type: gear.type,
         weight: gear.weight,
@@ -1112,7 +1191,8 @@ async function main() {
       const userId = Number(req.user.sub);
       const listId = Number(req.body?.listId);
       const name = String(req.body?.name || "").trim();
-      const category = String(req.body?.category || "").trim();
+      const description = String(req.body?.description || "").trim();
+      const category = String(req.body?.category || "未分类").trim();
       const type = String(req.body?.type || "base").trim();
       const weight = Number(req.body?.weight);
       const qty = Number(req.body?.qty);
@@ -1129,6 +1209,7 @@ async function main() {
 
       await db.upsertGear(userId, {
         name,
+        description,
         category,
         type,
         weight: Math.round(weight),
@@ -1137,6 +1218,7 @@ async function main() {
 
       const item = await db.createItem(userId, listId, {
         name,
+        description,
         category,
         type,
         weight: Math.round(weight),
@@ -1170,7 +1252,9 @@ async function main() {
 
       const hasType = req.body && Object.prototype.hasOwnProperty.call(req.body, "type");
       const hasWeight = req.body && Object.prototype.hasOwnProperty.call(req.body, "weight");
-      if (!hasType && !hasWeight) {
+      const hasCategory = req.body && Object.prototype.hasOwnProperty.call(req.body, "category");
+      const hasDescription = req.body && Object.prototype.hasOwnProperty.call(req.body, "description");
+      if (!hasType && !hasWeight && !hasCategory && !hasDescription) {
         return res.status(400).json({ error: "请提供需要更新的字段" });
       }
 
@@ -1193,6 +1277,17 @@ async function main() {
           return res.status(400).json({ error: "重量必须大于 0" });
         }
         item = await db.updateItemWeightAndSync(id, userId, weight);
+      }
+
+      if (hasCategory) {
+        const category = String(req.body?.category || "").trim();
+        if (!category) return res.status(400).json({ error: "分类不能为空" });
+        item = await db.updateItemCategory(id, userId, category.slice(0, 20));
+      }
+
+      if (hasDescription) {
+        const description = String(req.body?.description || "").trim().slice(0, 80);
+        item = await db.updateItemDescriptionAndSync(id, userId, description);
       }
 
       if (!item) return res.status(404).json({ error: "装备不存在" });

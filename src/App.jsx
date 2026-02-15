@@ -4,16 +4,7 @@ const TOKEN_KEY = "trailpack.auth.token.v1";
 const LIST_KEY = "trailpack.active.list.v1";
 const API_BASE = import.meta.env.VITE_API_BASE || "";
 const CUSTOM_CATEGORY_VALUE = "__custom__";
-
-const defaultCategories = [
-  "背包系统",
-  "睡眠系统",
-  "衣物",
-  "炊具",
-  "电子设备",
-  "医疗与安全",
-  "其他",
-];
+const UNCATEGORIZED = "未分类";
 
 async function api(path, options = {}, token) {
   const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
@@ -83,7 +74,7 @@ export default function App() {
 
   const [form, setForm] = useState({
     name: "",
-    category: defaultCategories[0],
+    description: "",
     weight: "",
     qty: "1",
   });
@@ -95,7 +86,7 @@ export default function App() {
   }, [lists, activeListId]);
 
   const categoryOptions = useMemo(() => {
-    const merged = new Set(defaultCategories);
+    const merged = new Set([UNCATEGORIZED]);
     for (const category of categoryCatalog) {
       const text = String(category || "").trim();
       if (text) merged.add(text);
@@ -104,10 +95,8 @@ export default function App() {
       const category = String(item.category || "").trim();
       if (category) merged.add(category);
     }
-    const current = String(form.category || "").trim();
-    if (current) merged.add(current);
     return Array.from(merged);
-  }, [categoryCatalog, items, form.category]);
+  }, [categoryCatalog, items]);
 
   async function refreshCategories(authToken = token) {
     if (!authToken) return;
@@ -150,7 +139,7 @@ export default function App() {
     return gears.filter((gear) => {
       return (
         String(gear.name || "").toLowerCase().includes(q) ||
-        String(gear.category || "").toLowerCase().includes(q)
+        String(gear.description || "").toLowerCase().includes(q)
       );
     });
   }, [gears, gearQuery]);
@@ -439,6 +428,7 @@ export default function App() {
     const weight = Number(form.weight);
     const qty = Number(form.qty);
     const name = form.name.trim();
+    const description = String(form.description || "").trim().slice(0, 80);
     if (!name || weight <= 0 || qty <= 0) return;
 
     try {
@@ -449,7 +439,8 @@ export default function App() {
           body: JSON.stringify({
             listId: activeListId,
             name,
-            category: form.category,
+            description,
+            category: UNCATEGORIZED,
             weight,
             qty,
           }),
@@ -459,7 +450,7 @@ export default function App() {
       setItems((prev) => [data.item, ...prev]);
       await refreshCategories();
       await refreshGears();
-      setForm((prev) => ({ ...prev, name: "", weight: "", qty: "1" }));
+      setForm((prev) => ({ ...prev, name: "", description: "", weight: "", qty: "1" }));
     } catch (err) {
       setAppError(err.message || "添加失败");
     }
@@ -512,6 +503,57 @@ export default function App() {
       setAppError(err.message || "更新装备标记失败");
     } finally {
       setItemTypePendingId(0);
+    }
+  }
+
+  async function onChangeItemCategory(item, nextCategory) {
+    if (!item?.id) return;
+    const category = String(nextCategory || "").trim();
+    if (!category || category === item.category) return;
+    setAppError("");
+    try {
+      const data = await api(
+        `/api/items/${item.id}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ category }),
+        },
+        token
+      );
+      setItems((prev) => prev.map((it) => (it.id === item.id ? data.item : it)));
+      await refreshCategories();
+      await refreshGears(activeListId);
+    } catch (err) {
+      setAppError(err.message || "更新分类失败");
+    }
+  }
+
+  async function onEditItemCategory(item) {
+    const custom = window.prompt("输入分类名称", item?.category || "");
+    if (custom === null) return;
+    const category = custom.trim().slice(0, 20);
+    if (!category) return;
+    await onChangeItemCategory(item, category);
+  }
+
+  async function onSaveItemDescription(item, value) {
+    if (!item?.id) return;
+    const description = String(value || "").trim().slice(0, 80);
+
+    setAppError("");
+    try {
+      const data = await api(
+        `/api/items/${item.id}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ description }),
+        },
+        token
+      );
+      setItems((prev) => prev.map((it) => (it.id === item.id ? data.item : it)));
+      await refreshGears(activeListId);
+    } catch (err) {
+      setAppError(err.message || "更新描述失败");
     }
   }
 
@@ -778,34 +820,15 @@ export default function App() {
                 <input required maxLength={40} placeholder="例如：帐篷" value={form.name} onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))} />
               </label>
 
-              <div className="row row-single">
-                <label className="category-field">
-                  分类
-                  <select
-                    value={categoryOptions.includes(form.category) ? form.category : CUSTOM_CATEGORY_VALUE}
-                    onChange={(e) => {
-                      const next = e.target.value;
-                      if (next !== CUSTOM_CATEGORY_VALUE) {
-                        setForm((prev) => ({ ...prev, category: next }));
-                        return;
-                      }
-
-                      const custom = window.prompt("输入新分类名称", "");
-                      if (!custom) return;
-                      const name = custom.trim().slice(0, 20);
-                      if (!name) return;
-
-                      setCategoryCatalog((prev) => (prev.includes(name) ? prev : [...prev, name]));
-                      setForm((prev) => ({ ...prev, category: name }));
-                    }}
-                  >
-                    {categoryOptions.map((cat) => (
-                      <option key={cat} value={cat}>{cat}</option>
-                    ))}
-                    <option value={CUSTOM_CATEGORY_VALUE}>+ 新建分类...</option>
-                  </select>
-                </label>
-              </div>
+              <label>
+                装备描述（可选）
+                <input
+                  maxLength={80}
+                  placeholder="例如：IPhone 14 Pro / 绿联 20000mAh"
+                  value={form.description}
+                  onChange={(e) => setForm((prev) => ({ ...prev, description: e.target.value }))}
+                />
+              </label>
 
               <div className="row">
                 <label>
@@ -829,7 +852,7 @@ export default function App() {
               <label className="gear-search">
                 搜索装备
                 <input
-                  placeholder="输入名称或分类，例如：睡袋 / 炊具"
+                  placeholder="输入名称或描述，例如：睡袋 / 10000mAh"
                   value={gearQuery}
                   onChange={(e) => setGearQuery(e.target.value)}
                 />
@@ -840,7 +863,10 @@ export default function App() {
                   <article className="gear-item" key={gear.id}>
                     <div>
                       <p className="item-name">{gear.name}</p>
-                      <p className="item-meta">{gear.category} · {gear.defaultQty} x {gear.weight}g</p>
+                      <p className="item-meta">
+                        {gear.description ? `${gear.description} · ` : ""}
+                        {gear.defaultQty} x {gear.weight}g
+                      </p>
                     </div>
                     <div className="gear-item-right">
                       <button
@@ -885,7 +911,47 @@ export default function App() {
                       <article className="item" key={item.id} tabIndex={0}>
                         <div>
                           <p className="item-name">{item.name}</p>
+                          <input
+                            className="item-desc-input"
+                            value={item.description || ""}
+                            maxLength={80}
+                            placeholder="添加描述（可选）"
+                            onChange={(e) =>
+                              setItems((prev) =>
+                                prev.map((it) => (it.id === item.id ? { ...it, description: e.target.value } : it))
+                              )
+                            }
+                            onBlur={(e) => onSaveItemDescription(item, e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                onSaveItemDescription(item, e.currentTarget.value);
+                              }
+                            }}
+                          />
                           <p className="item-meta">数量: {item.qty}</p>
+                          <div className="item-category-wrap">
+                            <span>分类</span>
+                            <select
+                              className="category-inline"
+                              value={categoryOptions.includes(item.category) ? item.category : CUSTOM_CATEGORY_VALUE}
+                              onChange={(e) => {
+                                const next = e.target.value;
+                                if (next === CUSTOM_CATEGORY_VALUE) {
+                                  onEditItemCategory(item);
+                                  return;
+                                }
+                                onChangeItemCategory(item, next);
+                              }}
+                            >
+                              {categoryOptions.map((cat) => (
+                                <option key={cat} value={cat}>
+                                  {cat}
+                                </option>
+                              ))}
+                              <option value={CUSTOM_CATEGORY_VALUE}>+ 新建分类...</option>
+                            </select>
+                          </div>
                           <div className="item-markers">
                             <button
                               type="button"
