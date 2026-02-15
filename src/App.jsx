@@ -73,6 +73,9 @@ export default function App() {
   const [categoryEditPending, setCategoryEditPending] = useState(false);
   const [editingCategoryName, setEditingCategoryName] = useState("");
   const [editingCategoryValue, setEditingCategoryValue] = useState("");
+  const [dialogBusy, setDialogBusy] = useState(false);
+  const [confirmDialog, setConfirmDialog] = useState(null);
+  const [inputDialog, setInputDialog] = useState(null);
   const [appError, setAppError] = useState("");
 
   const [form, setForm] = useState({
@@ -81,6 +84,42 @@ export default function App() {
     weight: "",
     qty: "1",
   });
+
+  function openConfirmDialog(config) {
+    setConfirmDialog(config);
+  }
+
+  function openInputDialog(config) {
+    setInputDialog({
+      ...config,
+      value: config.initialValue || "",
+    });
+  }
+
+  async function onConfirmDialogSubmit() {
+    if (!confirmDialog?.onConfirm) return;
+    setDialogBusy(true);
+    try {
+      await confirmDialog.onConfirm();
+      setConfirmDialog(null);
+    } finally {
+      setDialogBusy(false);
+    }
+  }
+
+  async function onInputDialogSubmit() {
+    if (!inputDialog?.onSubmit) return;
+    const value = String(inputDialog.value || "").trim();
+    if (!value) return;
+
+    setDialogBusy(true);
+    try {
+      await inputDialog.onSubmit(value);
+      setInputDialog(null);
+    } finally {
+      setDialogBusy(false);
+    }
+  }
 
   const grouped = useMemo(() => groupByCategory(items), [items]);
 
@@ -338,9 +377,8 @@ export default function App() {
     }
   }
 
-  async function onDeleteCurrentList() {
+  async function doDeleteCurrentList() {
     if (!activeListId) return;
-    if (!window.confirm("确认删除当前行程清单及其装备？")) return;
 
     setAppError("");
     setListPending(true);
@@ -363,6 +401,16 @@ export default function App() {
     }
   }
 
+  function onDeleteCurrentList() {
+    if (!activeListId) return;
+    openConfirmDialog({
+      title: "删除当前清单？",
+      message: "确认删除当前行程清单及其装备？",
+      confirmText: "删除",
+      onConfirm: doDeleteCurrentList,
+    });
+  }
+
   async function onSwitchList(nextId) {
     if (!nextId || Number(nextId) === Number(activeListId)) return;
     setAppError("");
@@ -374,12 +422,8 @@ export default function App() {
     }
   }
 
-  async function onCloneCurrentList() {
+  async function doCloneCurrentList(name) {
     if (!activeListId || !currentList) return;
-
-    const input = window.prompt("请输入复制后清单名称", `${currentList.name} (复制)`);
-    if (input === null) return;
-    const name = input.trim();
     if (!name) {
       setAppError("清单名称不能为空");
       return;
@@ -404,6 +448,17 @@ export default function App() {
     } finally {
       setListPending(false);
     }
+  }
+
+  function onCloneCurrentList() {
+    if (!activeListId || !currentList) return;
+    openInputDialog({
+      title: "复制当前清单",
+      label: "请输入复制后清单名称",
+      confirmText: "确定",
+      initialValue: `${currentList.name} (复制)`,
+      onSubmit: doCloneCurrentList,
+    });
   }
 
   function logout() {
@@ -471,10 +526,9 @@ export default function App() {
     }
   }
 
-  async function clearAll() {
+  async function doClearAll() {
     if (!activeListId) return;
     if (!items.length) return;
-    if (!window.confirm("确认清空当前行程清单装备？")) return;
 
     setAppError("");
     try {
@@ -485,6 +539,16 @@ export default function App() {
     } catch (err) {
       setAppError(err.message || "清空失败");
     }
+  }
+
+  function clearAll() {
+    if (!activeListId || !items.length) return;
+    openConfirmDialog({
+      title: "清空当前清单？",
+      message: "确认清空当前行程清单装备？",
+      confirmText: "清空",
+      onConfirm: doClearAll,
+    });
   }
 
   async function onToggleItemType(item, nextType) {
@@ -532,11 +596,15 @@ export default function App() {
   }
 
   async function onEditItemCategory(item) {
-    const custom = window.prompt("输入分类名称", item?.category || "");
-    if (custom === null) return;
-    const category = custom.trim().slice(0, 20);
-    if (!category) return;
-    await onChangeItemCategory(item, category);
+    openInputDialog({
+      title: "编辑分类",
+      label: "输入分类名称",
+      confirmText: "保存",
+      initialValue: item?.category || "",
+      onSubmit: async (value) => {
+        await onChangeItemCategory(item, value.slice(0, 20));
+      },
+    });
   }
 
   async function onRenameCategory(category, nextRawValue) {
@@ -584,11 +652,16 @@ export default function App() {
   }
 
   function onAddCategoryOnly() {
-    const input = window.prompt("输入新分类名称", "");
-    if (input === null) return;
-    const next = input.trim().slice(0, 20);
-    if (!next) return;
-    setCategoryCatalog((prev) => (prev.includes(next) ? prev : [...prev, next]));
+    openInputDialog({
+      title: "添加新分类",
+      label: "输入新分类名称",
+      confirmText: "添加",
+      initialValue: "",
+      onSubmit: async (value) => {
+        const next = value.slice(0, 20);
+        setCategoryCatalog((prev) => (prev.includes(next) ? prev : [...prev, next]));
+      },
+    });
   }
 
   async function onSaveItemDescription(item, value) {
@@ -686,16 +759,21 @@ export default function App() {
 
   async function onDeleteGear(gear) {
     if (!gear?.id) return;
-    if (!window.confirm(`确认从“我的全部装备”删除「${gear.name}」？`)) return;
-
-    setAppError("");
-    try {
-      await api(`/api/gears/${gear.id}`, { method: "DELETE" }, token);
-      setGears((prev) => prev.filter((g) => g.id !== gear.id));
-      await refreshCategories();
-    } catch (err) {
-      setAppError(err.message || "删除装备失败");
-    }
+    openConfirmDialog({
+      title: "删除装备？",
+      message: `确认从“我的全部装备”删除「${gear.name}」？`,
+      confirmText: "删除",
+      onConfirm: async () => {
+        setAppError("");
+        try {
+          await api(`/api/gears/${gear.id}`, { method: "DELETE" }, token);
+          setGears((prev) => prev.filter((g) => g.id !== gear.id));
+          await refreshCategories();
+        } catch (err) {
+          setAppError(err.message || "删除装备失败");
+        }
+      },
+    });
   }
 
   if (authChecking) {
@@ -1146,6 +1224,51 @@ export default function App() {
           </div>
         </section>
       </main>
+      {(confirmDialog || inputDialog) && (
+        <div className="modal-mask">
+          <section className="modal-card">
+            <h3>{confirmDialog?.title || inputDialog?.title}</h3>
+            {confirmDialog?.message && <p className="muted">{confirmDialog.message}</p>}
+            {inputDialog && (
+              <label className="modal-input">
+                {inputDialog.label}
+                <input
+                  value={inputDialog.value}
+                  onChange={(e) => setInputDialog((prev) => ({ ...prev, value: e.target.value }))}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      onInputDialogSubmit();
+                    }
+                    if (e.key === "Escape") setInputDialog(null);
+                  }}
+                  autoFocus
+                />
+              </label>
+            )}
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => {
+                  setConfirmDialog(null);
+                  setInputDialog(null);
+                }}
+                disabled={dialogBusy}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={confirmDialog ? onConfirmDialogSubmit : onInputDialogSubmit}
+                disabled={dialogBusy}
+              >
+                {confirmDialog?.confirmText || inputDialog?.confirmText || "确定"}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </>
   );
 }

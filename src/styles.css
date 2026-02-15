@@ -754,6 +754,42 @@ button.tab.active {
   background: #fff3f5;
 }
 
+.modal-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(18, 26, 42, 0.38);
+  display: grid;
+  place-items: center;
+  z-index: 50;
+  padding: 16px;
+}
+
+.modal-card {
+  width: min(520px, 100%);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 22px 48px rgba(15, 24, 42, 0.25);
+  padding: 16px;
+  display: grid;
+  gap: 12px;
+}
+
+.modal-card h3 {
+  margin: 0;
+}
+
+.modal-input {
+  display: grid;
+  gap: 6px;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
 button:disabled {
   opacity: 0.7;
   cursor: not-allowed;
