@@ -336,6 +336,14 @@ async function createPostgresDb() {
       return rows[0];
     },
 
+    updateItemType: async (id, userId, type) => {
+      const { rows } = await pool.query(
+        "UPDATE items SET type = $1 WHERE id = $2 AND user_id = $3 RETURNING id, name, category, type, weight, qty",
+        [type, id, userId]
+      );
+      return rows[0] || null;
+    },
+
     deleteItem: async (id, userId) => {
       const result = await pool.query("DELETE FROM items WHERE id = $1 AND user_id = $2", [id, userId]);
       return result.rowCount;
@@ -393,6 +401,11 @@ async function createPostgresDb() {
         [userId, gearId]
       );
       return rows[0] || null;
+    },
+
+    deleteGearById: async (userId, gearId) => {
+      const result = await pool.query("DELETE FROM gear_library WHERE user_id = $1 AND id = $2", [userId, gearId]);
+      return result.rowCount;
     },
   };
 }
@@ -613,6 +626,16 @@ function createSqliteDb() {
         .get(result.lastInsertRowid);
     },
 
+    updateItemType: async (id, userId, type) => {
+      const result = sqlite
+        .prepare("UPDATE items SET type = ? WHERE id = ? AND user_id = ?")
+        .run(type, id, userId);
+      if (!result.changes) return null;
+      return sqlite
+        .prepare("SELECT id, name, category, type, weight, qty FROM items WHERE id = ?")
+        .get(id);
+    },
+
     deleteItem: async (id, userId) => {
       const result = sqlite.prepare("DELETE FROM items WHERE id = ? AND user_id = ?").run(id, userId);
       return result.changes;
@@ -680,6 +703,11 @@ function createSqliteDb() {
           )
           .get(userId, gearId) || null
       );
+    },
+
+    deleteGearById: async (userId, gearId) => {
+      const result = sqlite.prepare("DELETE FROM gear_library WHERE user_id = ? AND id = ?").run(userId, gearId);
+      return result.changes;
     },
   };
 }
@@ -880,6 +908,20 @@ async function main() {
     }
   });
 
+  app.delete("/api/gears/:id", authRequired, async (req, res) => {
+    try {
+      const userId = Number(req.user.sub);
+      const gearId = Number(req.params.id);
+      if (!Number.isInteger(gearId) || gearId <= 0) return res.status(400).json({ error: "无效装备 id" });
+
+      const changes = await db.deleteGearById(userId, gearId);
+      if (!changes) return res.status(404).json({ error: "装备不存在" });
+      return res.json({ ok: true });
+    } catch {
+      return res.status(500).json({ error: "删除装备失败" });
+    }
+  });
+
   app.post("/api/lists", authRequired, async (req, res) => {
     try {
       const userId = Number(req.user.sub);
@@ -958,7 +1000,7 @@ async function main() {
       const listId = Number(req.body?.listId);
       const name = String(req.body?.name || "").trim();
       const category = String(req.body?.category || "").trim();
-      const type = String(req.body?.type || "").trim();
+      const type = String(req.body?.type || "base").trim();
       const weight = Number(req.body?.weight);
       const qty = Number(req.body?.qty);
 
@@ -1005,6 +1047,23 @@ async function main() {
       return res.json({ ok: true });
     } catch {
       return res.status(500).json({ error: "删除装备失败" });
+    }
+  });
+
+  app.patch("/api/items/:id", authRequired, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const type = String(req.body?.type || "").trim();
+      if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: "无效的装备 id" });
+      if (!["base", "worn", "consumable"].includes(type)) {
+        return res.status(400).json({ error: "装备类型不正确" });
+      }
+
+      const item = await db.updateItemType(id, Number(req.user.sub), type);
+      if (!item) return res.status(404).json({ error: "装备不存在" });
+      return res.json({ item });
+    } catch {
+      return res.status(500).json({ error: "更新装备标记失败" });
     }
   });
 

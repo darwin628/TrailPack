@@ -41,18 +41,16 @@ function itemTotal(item) {
   return item.weight * item.qty;
 }
 
+function carriedItemTotal(item) {
+  return item.type === "worn" ? 0 : itemTotal(item);
+}
+
 function groupByCategory(items) {
   return items.reduce((acc, item) => {
     if (!acc[item.category]) acc[item.category] = [];
     acc[item.category].push(item);
     return acc;
   }, {});
-}
-
-function typeLabel(type) {
-  if (type === "worn") return "穿戴";
-  if (type === "consumable") return "消耗品";
-  return "基础";
 }
 
 export default function App() {
@@ -77,12 +75,12 @@ export default function App() {
   const [authInfo, setAuthInfo] = useState("");
   const [authPending, setAuthPending] = useState(false);
   const [listPending, setListPending] = useState(false);
+  const [itemTypePendingId, setItemTypePendingId] = useState(0);
   const [appError, setAppError] = useState("");
 
   const [form, setForm] = useState({
     name: "",
     category: defaultCategories[0],
-    type: "base",
     weight: "",
     qty: "1",
   });
@@ -124,7 +122,7 @@ export default function App() {
   }
 
   const totals = useMemo(() => {
-    const total = items.reduce((sum, item) => sum + itemTotal(item), 0);
+    const total = items.reduce((sum, item) => sum + carriedItemTotal(item), 0);
     const base = items
       .filter((item) => item.type === "base")
       .reduce((sum, item) => sum + itemTotal(item), 0);
@@ -136,9 +134,10 @@ export default function App() {
     const total = totals.total || 1;
     return Object.entries(grouped)
       .map(([category, list]) => {
-        const weight = list.reduce((sum, item) => sum + itemTotal(item), 0);
+        const weight = list.reduce((sum, item) => sum + carriedItemTotal(item), 0);
         return { category, weight, pct: (weight / total) * 100 };
       })
+      .filter((entry) => entry.weight > 0)
       .sort((a, b) => b.weight - a.weight);
   }, [grouped, items.length, totals.total]);
 
@@ -448,7 +447,6 @@ export default function App() {
             listId: activeListId,
             name,
             category: form.category,
-            type: form.type,
             weight,
             qty,
           }),
@@ -492,6 +490,28 @@ export default function App() {
     }
   }
 
+  async function onToggleItemType(item, nextType) {
+    if (!item?.id) return;
+    setAppError("");
+    setItemTypePendingId(item.id);
+    try {
+      const data = await api(
+        `/api/items/${item.id}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ type: nextType }),
+        },
+        token
+      );
+      setItems((prev) => prev.map((it) => (it.id === item.id ? data.item : it)));
+      await refreshGears();
+    } catch (err) {
+      setAppError(err.message || "更新装备标记失败");
+    } finally {
+      setItemTypePendingId(0);
+    }
+  }
+
   async function onAddGearToCurrentList(gear) {
     if (!activeListId) return;
     setAppError("");
@@ -508,6 +528,20 @@ export default function App() {
       await refreshGears();
     } catch (err) {
       setAppError(err.message || "加入当前清单失败");
+    }
+  }
+
+  async function onDeleteGear(gear) {
+    if (!gear?.id) return;
+    if (!window.confirm(`确认从“我的全部装备”删除「${gear.name}」？`)) return;
+
+    setAppError("");
+    try {
+      await api(`/api/gears/${gear.id}`, { method: "DELETE" }, token);
+      setGears((prev) => prev.filter((g) => g.id !== gear.id));
+      await refreshCategories();
+    } catch (err) {
+      setAppError(err.message || "删除装备失败");
     }
   }
 
@@ -688,7 +722,7 @@ export default function App() {
                 <input required maxLength={40} placeholder="例如：帐篷" value={form.name} onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))} />
               </label>
 
-              <div className="row">
+              <div className="row row-single">
                 <label className="category-field">
                   分类
                   <select
@@ -713,14 +747,6 @@ export default function App() {
                       <option key={cat} value={cat}>{cat}</option>
                     ))}
                     <option value={CUSTOM_CATEGORY_VALUE}>+ 新建分类...</option>
-                  </select>
-                </label>
-                <label>
-                  类型
-                  <select value={form.type} onChange={(e) => setForm((prev) => ({ ...prev, type: e.target.value }))}>
-                    <option value="base">基础装备</option>
-                    <option value="worn">穿戴</option>
-                    <option value="consumable">消耗品</option>
                   </select>
                 </label>
               </div>
@@ -758,7 +784,7 @@ export default function App() {
                   <article className="gear-item" key={gear.id}>
                     <div>
                       <p className="item-name">{gear.name}</p>
-                      <p className="item-meta">{gear.category} · {typeLabel(gear.type)} · {gear.defaultQty} x {gear.weight}g</p>
+                      <p className="item-meta">{gear.category} · {gear.defaultQty} x {gear.weight}g</p>
                     </div>
                     <div className="gear-item-right">
                       <span className={`gear-state ${gear.inCurrentList ? "in" : "out"}`}>
@@ -771,6 +797,13 @@ export default function App() {
                         disabled={gear.inCurrentList || !activeListId}
                       >
                         加入
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost danger-ghost"
+                        onClick={() => onDeleteGear(gear)}
+                      >
+                        删除
                       </button>
                     </div>
                   </article>
@@ -788,7 +821,7 @@ export default function App() {
             <div className="groups">
               {!items.length && <p className="empty">当前清单还没有装备，先添加一件试试。</p>}
               {Object.entries(grouped).map(([category, list]) => {
-                const total = list.reduce((sum, item) => sum + itemTotal(item), 0);
+                const total = list.reduce((sum, item) => sum + carriedItemTotal(item), 0);
                 return (
                   <section className="group" key={category}>
                     <div className="group-head">
@@ -799,10 +832,32 @@ export default function App() {
                       <article className="item" key={item.id}>
                         <div>
                           <p className="item-name">{item.name}</p>
-                          <p className="item-meta">{typeLabel(item.type)} · {item.qty} x {item.weight}g</p>
+                          <p className="item-meta">{item.qty} x {item.weight}g</p>
+                          <div className="item-markers">
+                            <button
+                              type="button"
+                              className={`marker-btn ${item.type === "worn" ? "active worn" : ""}`}
+                              onClick={() => onToggleItemType(item, item.type === "worn" ? "base" : "worn")}
+                              disabled={itemTypePendingId === item.id}
+                            >
+                              穿戴
+                            </button>
+                            <button
+                              type="button"
+                              className={`marker-btn ${item.type === "consumable" ? "active consumable" : ""}`}
+                              onClick={() =>
+                                onToggleItemType(item, item.type === "consumable" ? "base" : "consumable")
+                              }
+                              disabled={itemTypePendingId === item.id}
+                            >
+                              消耗品
+                            </button>
+                          </div>
                         </div>
                         <div className="item-right">
-                          <strong className="item-weight">{formatG(itemTotal(item))}</strong>
+                          <strong className="item-weight">
+                            {item.type === "worn" ? "不计入总重" : formatG(itemTotal(item))}
+                          </strong>
                           <button type="button" className="delete-btn" onClick={() => removeItem(item.id)} title="删除">✕</button>
                         </div>
                       </article>

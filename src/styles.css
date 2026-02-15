@@ -311,6 +311,10 @@ select:focus {
   gap: 10px;
 }
 
+.row.row-single {
+  grid-template-columns: 1fr;
+}
+
 .category-field {
   align-content: start;
 }
@@ -414,6 +418,43 @@ button.danger-ghost {
   font-size: 12px;
 }
 
+.item-markers {
+  margin-top: 8px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.marker-btn {
+  border: 1px solid rgba(27, 39, 58, 0.16);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  line-height: 1.2;
+  font-weight: 700;
+  color: #3c455b;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: none;
+}
+
+.marker-btn:hover {
+  transform: none;
+  box-shadow: none;
+  filter: none;
+}
+
+.marker-btn.active.worn {
+  border-color: rgba(53, 89, 230, 0.32);
+  color: #2f4fc2;
+  background: rgba(53, 89, 230, 0.12);
+}
+
+.marker-btn.active.consumable {
+  border-color: rgba(255, 123, 79, 0.4);
+  color: #a44725;
+  background: rgba(255, 123, 79, 0.14);
+}
+
 .item-right {
   display: flex;
   align-items: center;
@@ -422,6 +463,8 @@ button.danger-ghost {
 
 .item-weight {
   font-family: "Space Grotesk", sans-serif;
+  font-size: 14px;
+  color: #2b3550;
 }
 
 .delete-btn {
@@ -522,6 +565,17 @@ button.danger-ghost {
   .gear-item-right button {
     min-width: 0;
     flex: none;
+  }
+
+  .item {
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .item-right {
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 6px;
   }
 }
 
