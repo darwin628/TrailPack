@@ -1046,11 +1046,14 @@ export default function App() {
 
       <main className="app">
         <header className="hero card">
-          <div>
+          <div className="hero-main">
             <p className="eyebrow">TrailPack Planner</p>
             <h1>多目的地装备清单</h1>
             <p className="muted">为不同路线维护独立装备清单，重量统计互不干扰。</p>
-            <p className="muted user-pill">当前用户: {session.email}</p>
+            <div className="hero-user-row">
+              <p className="muted user-pill">当前用户: {session.email}</p>
+              <button type="button" className="ghost user-logout-btn" onClick={logout}>退出登录</button>
+            </div>
             <p className="active-list-badge">
               当前正在编辑: {currentList ? currentList.name : "未选择"}
             </p>
@@ -1064,9 +1067,6 @@ export default function App() {
               <span>总携带重量</span>
               <strong>{formatG(totals.total)}</strong>
             </div>
-          </div>
-          <div className="hero-actions">
-            <button type="button" className="ghost" onClick={logout}>退出登录</button>
           </div>
         </header>
 

@@ -78,10 +78,14 @@ body {
 
 .hero {
   padding: 24px;
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: start;
   gap: 20px;
+}
+
+.hero-main {
+  min-width: 0;
 }
 
 .eyebrow {
@@ -117,9 +121,16 @@ h2 {
   gap: 10px;
 }
 
-.hero-actions {
+.hero-user-row {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.user-logout-btn {
+  padding: 8px 12px !important;
 }
 
 .metric {
@@ -673,8 +684,8 @@ body.dragging * {
     display: grid;
   }
 
-  .hero-actions {
-    position: static;
+  .hero-user-row {
+    margin-top: 8px;
   }
 
   .list-manager-head,
@@ -780,7 +791,7 @@ button.tab.active {
 }
 
 .user-pill {
-  margin-top: 8px;
+  margin-top: 0;
   font-size: 13px;
 }
 
