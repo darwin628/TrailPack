@@ -336,12 +336,73 @@ async function createPostgresDb() {
       return rows[0];
     },
 
+    getItemById: async (id, userId) => {
+      const { rows } = await pool.query(
+        "SELECT id, name, category, type, weight, qty FROM items WHERE id = $1 AND user_id = $2 LIMIT 1",
+        [id, userId]
+      );
+      return rows[0] || null;
+    },
+
     updateItemType: async (id, userId, type) => {
       const { rows } = await pool.query(
         "UPDATE items SET type = $1 WHERE id = $2 AND user_id = $3 RETURNING id, name, category, type, weight, qty",
         [type, id, userId]
       );
       return rows[0] || null;
+    },
+
+    updateItemWeightAndSync: async (id, userId, weight) => {
+      const current = await pool.query(
+        "SELECT id, name, category, type, weight, qty FROM items WHERE id = $1 AND user_id = $2 LIMIT 1",
+        [id, userId]
+      );
+      const item = current.rows[0];
+      if (!item) return null;
+
+      if (Number(item.weight) === Number(weight)) return item;
+
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query(
+          "UPDATE items SET weight = $1 WHERE user_id = $2 AND name = $3 AND category = $4 AND type = $5 AND weight = $6",
+          [weight, userId, item.name, item.category, item.type, item.weight]
+        );
+
+        const merged = await client.query(
+          `INSERT INTO gear_library (user_id, name, category, type, weight, default_qty)
+           VALUES ($1, $2, $3, $4, $5, $6)
+           ON CONFLICT (user_id, name, category, type, weight)
+           DO UPDATE SET default_qty = GREATEST(gear_library.default_qty, EXCLUDED.default_qty)
+           RETURNING id`,
+          [userId, item.name, item.category, item.type, weight, item.qty]
+        );
+        if (merged.rows[0]?.id) {
+          await client.query(
+            "DELETE FROM gear_library WHERE user_id = $1 AND name = $2 AND category = $3 AND type = $4 AND weight = $5 AND id <> $6",
+            [userId, item.name, item.category, item.type, item.weight, merged.rows[0].id]
+          );
+        } else {
+          await client.query(
+            "DELETE FROM gear_library WHERE user_id = $1 AND name = $2 AND category = $3 AND type = $4 AND weight = $5",
+            [userId, item.name, item.category, item.type, item.weight]
+          );
+        }
+
+        await client.query("COMMIT");
+      } catch {
+        await client.query("ROLLBACK");
+        throw new Error("sync_weight_failed");
+      } finally {
+        client.release();
+      }
+
+      const updated = await pool.query(
+        "SELECT id, name, category, type, weight, qty FROM items WHERE id = $1 AND user_id = $2 LIMIT 1",
+        [id, userId]
+      );
+      return updated.rows[0] || null;
     },
 
     deleteItem: async (id, userId) => {
@@ -626,6 +687,14 @@ function createSqliteDb() {
         .get(result.lastInsertRowid);
     },
 
+    getItemById: async (id, userId) => {
+      return (
+        sqlite
+          .prepare("SELECT id, name, category, type, weight, qty FROM items WHERE id = ? AND user_id = ?")
+          .get(id, userId) || null
+      );
+    },
+
     updateItemType: async (id, userId, type) => {
       const result = sqlite
         .prepare("UPDATE items SET type = ? WHERE id = ? AND user_id = ?")
@@ -634,6 +703,50 @@ function createSqliteDb() {
       return sqlite
         .prepare("SELECT id, name, category, type, weight, qty FROM items WHERE id = ?")
         .get(id);
+    },
+
+    updateItemWeightAndSync: async (id, userId, weight) => {
+      const item = sqlite
+        .prepare("SELECT id, name, category, type, weight, qty FROM items WHERE id = ? AND user_id = ?")
+        .get(id, userId);
+      if (!item) return null;
+
+      if (Number(item.weight) === Number(weight)) return item;
+
+      const tx = sqlite.transaction(() => {
+        sqlite
+          .prepare(
+            "UPDATE items SET weight = ? WHERE user_id = ? AND name = ? AND category = ? AND type = ? AND weight = ?"
+          )
+          .run(weight, userId, item.name, item.category, item.type, item.weight);
+
+        const existing = sqlite
+          .prepare(
+            "SELECT id FROM gear_library WHERE user_id = ? AND name = ? AND category = ? AND type = ? AND weight = ? LIMIT 1"
+          )
+          .get(userId, item.name, item.category, item.type, weight);
+
+        if (!existing) {
+          sqlite
+            .prepare(
+              `INSERT INTO gear_library (user_id, name, category, type, weight, default_qty)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(user_id, name, category, type, weight) DO UPDATE SET default_qty = MAX(default_qty, excluded.default_qty)`
+            )
+            .run(userId, item.name, item.category, item.type, weight, item.qty);
+        }
+
+        sqlite
+          .prepare(
+            "DELETE FROM gear_library WHERE user_id = ? AND name = ? AND category = ? AND type = ? AND weight = ?"
+          )
+          .run(userId, item.name, item.category, item.type, item.weight);
+      });
+      tx();
+
+      return sqlite
+        .prepare("SELECT id, name, category, type, weight, qty FROM items WHERE id = ? AND user_id = ?")
+        .get(id, userId);
     },
 
     deleteItem: async (id, userId) => {
@@ -1053,17 +1166,39 @@ async function main() {
   app.patch("/api/items/:id", authRequired, async (req, res) => {
     try {
       const id = Number(req.params.id);
-      const type = String(req.body?.type || "").trim();
       if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: "无效的装备 id" });
-      if (!["base", "worn", "consumable"].includes(type)) {
-        return res.status(400).json({ error: "装备类型不正确" });
+
+      const hasType = req.body && Object.prototype.hasOwnProperty.call(req.body, "type");
+      const hasWeight = req.body && Object.prototype.hasOwnProperty.call(req.body, "weight");
+      if (!hasType && !hasWeight) {
+        return res.status(400).json({ error: "请提供需要更新的字段" });
       }
 
-      const item = await db.updateItemType(id, Number(req.user.sub), type);
+      const userId = Number(req.user.sub);
+      let item = await db.getItemById(id, userId);
+      if (!item) return res.status(404).json({ error: "装备不存在" });
+
+      if (hasType) {
+        const type = String(req.body?.type || "").trim();
+        if (!["base", "worn", "consumable"].includes(type)) {
+          return res.status(400).json({ error: "装备类型不正确" });
+        }
+        item = await db.updateItemType(id, userId, type);
+        if (!item) return res.status(404).json({ error: "装备不存在" });
+      }
+
+      if (hasWeight) {
+        const weight = Math.round(Number(req.body?.weight));
+        if (!Number.isFinite(weight) || weight <= 0) {
+          return res.status(400).json({ error: "重量必须大于 0" });
+        }
+        item = await db.updateItemWeightAndSync(id, userId, weight);
+      }
+
       if (!item) return res.status(404).json({ error: "装备不存在" });
       return res.json({ item });
     } catch {
-      return res.status(500).json({ error: "更新装备标记失败" });
+      return res.status(500).json({ error: "更新装备失败" });
     }
   });
 

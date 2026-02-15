@@ -76,6 +76,9 @@ export default function App() {
   const [authPending, setAuthPending] = useState(false);
   const [listPending, setListPending] = useState(false);
   const [itemTypePendingId, setItemTypePendingId] = useState(0);
+  const [itemWeightPendingId, setItemWeightPendingId] = useState(0);
+  const [editingWeightItemId, setEditingWeightItemId] = useState(0);
+  const [weightDrafts, setWeightDrafts] = useState({});
   const [appError, setAppError] = useState("");
 
   const [form, setForm] = useState({
@@ -512,6 +515,59 @@ export default function App() {
     }
   }
 
+  function getWeightDraft(item) {
+    const draft = weightDrafts[item.id];
+    if (draft === undefined || draft === null || draft === "") return String(item.weight);
+    return String(draft);
+  }
+
+  function onStartEditItemWeight(item) {
+    setWeightDrafts((prev) => ({ ...prev, [item.id]: String(item.weight) }));
+    setEditingWeightItemId(item.id);
+  }
+
+  async function onSaveItemWeight(item) {
+    const nextWeight = Math.round(Number(getWeightDraft(item)));
+    if (!Number.isFinite(nextWeight) || nextWeight <= 0) {
+      setAppError("重量必须大于 0");
+      return;
+    }
+    if (nextWeight === Number(item.weight)) {
+      setEditingWeightItemId(0);
+      setWeightDrafts((prev) => {
+        const next = { ...prev };
+        delete next[item.id];
+        return next;
+      });
+      return;
+    }
+
+    setAppError("");
+    setItemWeightPendingId(item.id);
+    try {
+      await api(
+        `/api/items/${item.id}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ weight: nextWeight }),
+        },
+        token
+      );
+      await fetchItemsForList(activeListId);
+      await refreshGears(activeListId);
+      setWeightDrafts((prev) => {
+        const next = { ...prev };
+        delete next[item.id];
+        return next;
+      });
+    } catch (err) {
+      setAppError(err.message || "更新重量失败");
+    } finally {
+      setItemWeightPendingId(0);
+      setEditingWeightItemId(0);
+    }
+  }
+
   async function onAddGearToCurrentList(gear) {
     if (!activeListId) return;
     setAppError("");
@@ -768,7 +824,7 @@ export default function App() {
             <div className="my-gear-inline">
               <div className="panel-head">
                 <h2>我的全部装备</h2>
-                <span className="muted">已在当前清单: {gears.filter((g) => g.inCurrentList).length} / {gears.length}</span>
+                <span className="muted">共 {gears.length} 件</span>
               </div>
               <label className="gear-search">
                 搜索装备
@@ -787,14 +843,11 @@ export default function App() {
                       <p className="item-meta">{gear.category} · {gear.defaultQty} x {gear.weight}g</p>
                     </div>
                     <div className="gear-item-right">
-                      <span className={`gear-state ${gear.inCurrentList ? "in" : "out"}`}>
-                        {gear.inCurrentList ? "已在当前清单" : "未加入当前清单"}
-                      </span>
                       <button
                         type="button"
                         className="ghost"
                         onClick={() => onAddGearToCurrentList(gear)}
-                        disabled={gear.inCurrentList || !activeListId}
+                        disabled={!activeListId}
                       >
                         加入
                       </button>
@@ -829,10 +882,10 @@ export default function App() {
                       <span>{formatG(total)}</span>
                     </div>
                     {list.map((item) => (
-                      <article className="item" key={item.id}>
+                      <article className="item" key={item.id} tabIndex={0}>
                         <div>
                           <p className="item-name">{item.name}</p>
-                          <p className="item-meta">{item.qty} x {item.weight}g</p>
+                          <p className="item-meta">数量: {item.qty}</p>
                           <div className="item-markers">
                             <button
                               type="button"
@@ -855,9 +908,42 @@ export default function App() {
                           </div>
                         </div>
                         <div className="item-right">
-                          <strong className="item-weight">
-                            {item.type === "worn" ? "不计入总重" : formatG(itemTotal(item))}
-                          </strong>
+                          <div className="item-weight-edit">
+                            {editingWeightItemId === item.id ? (
+                              <>
+                                <input
+                                  type="number"
+                                  min="1"
+                                  step="1"
+                                  value={getWeightDraft(item)}
+                                  onChange={(e) =>
+                                    setWeightDrafts((prev) => ({ ...prev, [item.id]: e.target.value }))
+                                  }
+                                  onBlur={() => onSaveItemWeight(item)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter") {
+                                      e.preventDefault();
+                                      onSaveItemWeight(item);
+                                    }
+                                  }}
+                                  autoFocus
+                                  disabled={itemWeightPendingId === item.id}
+                                />
+                                <span>g</span>
+                              </>
+                            ) : (
+                              <button
+                                type="button"
+                                className="weight-trigger"
+                                onClick={() => onStartEditItemWeight(item)}
+                                disabled={itemWeightPendingId === item.id}
+                                title="点击修改重量"
+                              >
+                                {item.weight}g
+                              </button>
+                            )}
+                          </div>
+                          {item.type === "worn" && <strong className="item-weight">不计入总重</strong>}
                           <button type="button" className="delete-btn" onClick={() => removeItem(item.id)} title="删除">✕</button>
                         </div>
                       </article>

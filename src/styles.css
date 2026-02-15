@@ -241,28 +241,6 @@ h2 {
   padding: 9px 14px;
 }
 
-.gear-state {
-  font-size: 12px;
-  border-radius: 999px;
-  padding: 5px 10px;
-  border: 1px solid var(--line);
-  white-space: nowrap;
-  flex-shrink: 0;
-  font-weight: 700;
-}
-
-.gear-state.in {
-  background: rgba(53, 89, 230, 0.12);
-  color: #304fc4;
-  border-color: rgba(53, 89, 230, 0.28);
-}
-
-.gear-state.out {
-  background: rgba(255, 123, 79, 0.14);
-  color: #a44725;
-  border-color: rgba(255, 123, 79, 0.3);
-}
-
 .my-gear-inline {
   margin-top: 18px;
   border-top: 1px dashed rgba(27, 39, 58, 0.18);
@@ -419,10 +397,25 @@ button.danger-ghost {
 }
 
 .item-markers {
-  margin-top: 8px;
+  margin-top: 6px;
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  opacity: 0;
+  max-height: 0;
+  overflow: hidden;
+  pointer-events: none;
+  transform: translateY(-4px);
+  transition: opacity 0.18s ease, max-height 0.18s ease, transform 0.18s ease;
+}
+
+.item:hover .item-markers,
+.item:focus .item-markers,
+.item:focus-within .item-markers {
+  opacity: 1;
+  max-height: 48px;
+  pointer-events: auto;
+  transform: translateY(0);
 }
 
 .marker-btn {
@@ -459,6 +452,42 @@ button.danger-ghost {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.item-weight-edit {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.item-weight-edit input {
+  width: 84px;
+  border-radius: 10px;
+  padding: 6px 8px;
+  font-size: 13px;
+}
+
+.weight-trigger {
+  border: 1px solid rgba(27, 39, 58, 0.2);
+  border-radius: 10px;
+  padding: 6px 10px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #2f3c5a;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: none;
+}
+
+.weight-trigger:hover {
+  transform: none;
+  box-shadow: none;
+  filter: none;
+  background: rgba(240, 244, 255, 0.95);
+}
+
+.item-weight-edit span {
+  font-size: 12px;
+  color: var(--muted);
 }
 
 .item-weight {
@@ -576,6 +605,10 @@ button.danger-ghost {
     flex-direction: column;
     align-items: flex-end;
     gap: 6px;
+  }
+
+  .item-weight-edit input {
+    width: 76px;
   }
 }
 
