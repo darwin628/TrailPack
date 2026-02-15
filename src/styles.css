@@ -425,6 +425,15 @@ button.danger-ghost {
   background: rgba(240, 244, 255, 0.95);
 }
 
+.group-delete-btn {
+  color: #b13649;
+  border-color: rgba(207, 63, 78, 0.28);
+}
+
+.group-delete-btn:hover {
+  background: rgba(255, 240, 243, 0.95);
+}
+
 .item {
   display: flex;
   justify-content: space-between;

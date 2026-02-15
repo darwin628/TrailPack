@@ -654,6 +654,49 @@ export default function App() {
     }
   }
 
+  async function doDeleteCategory(category) {
+    if (!category || category === UNCATEGORIZED) return;
+    const targets = items.filter((it) => it.category === category);
+    if (!targets.length) return;
+
+    setAppError("");
+    setCategoryEditPending(true);
+    try {
+      await Promise.all(
+        targets.map((it) =>
+          api(
+            `/api/items/${it.id}`,
+            {
+              method: "PATCH",
+              body: JSON.stringify({ category: UNCATEGORIZED }),
+            },
+            token
+          )
+        )
+      );
+      setCategoryCatalog((prev) => prev.filter((cat) => cat !== category));
+      await fetchItemsForList(activeListId);
+      await refreshCategories();
+      await refreshGears(activeListId);
+    } catch (err) {
+      setAppError(err.message || "删除分类失败");
+    } finally {
+      setCategoryEditPending(false);
+      setEditingCategoryName("");
+      setEditingCategoryValue("");
+    }
+  }
+
+  function onDeleteCategory(category) {
+    if (!category || category === UNCATEGORIZED) return;
+    openConfirmDialog({
+      title: "删除分类？",
+      message: `将「${category}」下装备移动到「${UNCATEGORIZED}」`,
+      confirmText: "删除分类",
+      onConfirm: async () => doDeleteCategory(category),
+    });
+  }
+
   function onStartRenameCategory(category) {
     setEditingCategoryName(category);
     setEditingCategoryValue(category);
@@ -1133,6 +1176,17 @@ export default function App() {
                             >
                               ✎
                             </button>
+                            {category !== UNCATEGORIZED && (
+                              <button
+                                type="button"
+                                className="group-edit-btn group-delete-btn"
+                                title="删除分类"
+                                onClick={() => onDeleteCategory(category)}
+                                disabled={categoryEditPending}
+                              >
+                                🗑
+                              </button>
+                            )}
                           </>
                         )}
                       </div>
