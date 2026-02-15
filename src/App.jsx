@@ -70,6 +70,8 @@ export default function App() {
   const [itemWeightPendingId, setItemWeightPendingId] = useState(0);
   const [editingWeightItemId, setEditingWeightItemId] = useState(0);
   const [weightDrafts, setWeightDrafts] = useState({});
+  const [dragPayload, setDragPayload] = useState(null);
+  const [dragOverCategory, setDragOverCategory] = useState("");
   const [categoryEditPending, setCategoryEditPending] = useState(false);
   const [editingCategoryName, setEditingCategoryName] = useState("");
   const [editingCategoryValue, setEditingCategoryValue] = useState("");
@@ -84,6 +86,17 @@ export default function App() {
     weight: "",
     qty: "1",
   });
+
+  function beginDrag(payload) {
+    setDragPayload(payload);
+    document.body.classList.add("dragging");
+  }
+
+  function finishDrag() {
+    setDragPayload(null);
+    setDragOverCategory("");
+    document.body.classList.remove("dragging");
+  }
 
   function openConfirmDialog(config) {
     setConfirmDialog(config);
@@ -595,16 +608,16 @@ export default function App() {
     }
   }
 
-  async function onEditItemCategory(item) {
-    openInputDialog({
-      title: "编辑分类",
-      label: "输入分类名称",
-      confirmText: "保存",
-      initialValue: item?.category || "",
-      onSubmit: async (value) => {
-        await onChangeItemCategory(item, value.slice(0, 20));
-      },
-    });
+  async function onDropItemToCategory(itemId, category) {
+    const item = items.find((it) => it.id === itemId);
+    if (!item) return;
+    await onChangeItemCategory(item, category);
+  }
+
+  async function onDropGearToCategory(gearId, category) {
+    const gear = gears.find((it) => it.id === gearId);
+    if (!gear) return;
+    await onAddGearToCurrentList(gear, category);
   }
 
   async function onRenameCategory(category, nextRawValue) {
@@ -738,19 +751,33 @@ export default function App() {
     }
   }
 
-  async function onAddGearToCurrentList(gear) {
+  async function onAddGearToCurrentList(gear, targetCategory = "") {
     if (!activeListId) return;
     setAppError("");
     try {
-      const data = await api(
+      let createdItem = (await api(
         `/api/gears/${gear.id}/add-to-list`,
         {
           method: "POST",
           body: JSON.stringify({ listId: activeListId, qty: gear.defaultQty }),
         },
         token
-      );
-      setItems((prev) => [data.item, ...prev]);
+      )).item;
+
+      if (targetCategory && targetCategory !== createdItem.category) {
+        const patched = await api(
+          `/api/items/${createdItem.id}`,
+          {
+            method: "PATCH",
+            body: JSON.stringify({ category: targetCategory }),
+          },
+          token
+        );
+        createdItem = patched.item;
+      }
+
+      setItems((prev) => [createdItem, ...prev.filter((it) => it.id !== createdItem.id)]);
+      await refreshCategories();
       await refreshGears();
     } catch (err) {
       setAppError(err.message || "加入当前清单失败");
@@ -993,26 +1020,25 @@ export default function App() {
               <div className="gear-list">
                 {!filteredGears.length && <p className="empty">没有匹配装备。</p>}
                 {filteredGears.map((gear) => (
-                  <article className="gear-item" key={gear.id}>
+                  <article
+                    className="gear-item"
+                    key={gear.id}
+                    draggable
+                    onDragStart={() => beginDrag({ kind: "gear", id: gear.id })}
+                    onDragEnd={finishDrag}
+                  >
                     <div>
                       <p className="item-name">{gear.name}</p>
                       <p className="item-meta">
                         {gear.description ? `${gear.description} · ` : ""}
                         {gear.defaultQty} x {gear.weight}g
                       </p>
+                      <p className="item-meta drag-tip">拖动到右侧目标分类可加入清单</p>
                     </div>
                     <div className="gear-item-right">
                       <button
                         type="button"
-                        className="ghost"
-                        onClick={() => onAddGearToCurrentList(gear)}
-                        disabled={!activeListId}
-                      >
-                        加入
-                      </button>
-                      <button
-                        type="button"
-                        className="ghost danger-ghost"
+                        className="ghost danger-ghost gear-delete-btn"
                         onClick={() => onDeleteGear(gear)}
                       >
                         删除
@@ -1038,7 +1064,27 @@ export default function App() {
               {Object.entries(grouped).map(([category, list]) => {
                 const total = list.reduce((sum, item) => sum + carriedItemTotal(item), 0);
                 return (
-                  <section className="group" key={category}>
+                  <section
+                    className={`group ${dragOverCategory === category ? "drop-active" : ""}`}
+                    key={category}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      if (dragPayload) setDragOverCategory(category);
+                    }}
+                    onDragLeave={() => {
+                      if (dragOverCategory === category) setDragOverCategory("");
+                    }}
+                    onDrop={async (e) => {
+                      e.preventDefault();
+                      if (!dragPayload) return;
+                      if (dragPayload.kind === "item") {
+                        await onDropItemToCategory(dragPayload.id, category);
+                      } else if (dragPayload.kind === "gear") {
+                        await onDropGearToCategory(dragPayload.id, category);
+                      }
+                      finishDrag();
+                    }}
+                  >
                     <div className="group-head">
                       <div className="group-title-wrap">
                         {editingCategoryName === category ? (
@@ -1093,11 +1139,18 @@ export default function App() {
                       <span>{formatG(total)}</span>
                     </div>
                     {list.map((item) => (
-                      <article className="item" key={item.id} tabIndex={0}>
+                      <article
+                        className="item"
+                        key={item.id}
+                        tabIndex={0}
+                        draggable
+                        onDragStart={() => beginDrag({ kind: "item", id: item.id })}
+                        onDragEnd={finishDrag}
+                      >
                         <div>
                           <p className="item-name">{item.name}</p>
                           <input
-                            className="item-desc-input"
+                            className={`item-desc-input ${item.description ? "filled" : "empty"}`}
                             value={item.description || ""}
                             maxLength={80}
                             placeholder="添加描述（可选）"
@@ -1115,28 +1168,7 @@ export default function App() {
                             }}
                           />
                           <p className="item-meta">数量: {item.qty}</p>
-                          <div className="item-category-wrap">
-                            <span>分类</span>
-                            <select
-                              className="category-inline"
-                              value={categoryOptions.includes(item.category) ? item.category : CUSTOM_CATEGORY_VALUE}
-                              onChange={(e) => {
-                                const next = e.target.value;
-                                if (next === CUSTOM_CATEGORY_VALUE) {
-                                  onEditItemCategory(item);
-                                  return;
-                                }
-                                onChangeItemCategory(item, next);
-                              }}
-                            >
-                              {categoryOptions.map((cat) => (
-                                <option key={cat} value={cat}>
-                                  {cat}
-                                </option>
-                              ))}
-                              <option value={CUSTOM_CATEGORY_VALUE}>+ 新建分类...</option>
-                            </select>
-                          </div>
+                          <p className="item-meta drag-tip">拖动到目标分类即可归类</p>
                           <div className="item-markers">
                             <button
                               type="button"

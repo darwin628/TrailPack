@@ -218,6 +218,11 @@ h2 {
   flex-wrap: wrap;
   gap: 10px;
   box-shadow: var(--shadow-soft);
+  cursor: grab;
+}
+
+.gear-item:active {
+  cursor: grabbing;
 }
 
 .gear-item-right {
@@ -239,6 +244,12 @@ h2 {
 
 .gear-item-right .danger-ghost {
   padding: 9px 14px;
+}
+
+.gear-delete-btn {
+  padding: 6px 10px !important;
+  font-size: 13px;
+  min-width: 0 !important;
 }
 
 .my-gear-inline {
@@ -360,6 +371,11 @@ button.danger-ghost {
   box-shadow: var(--shadow-soft);
 }
 
+.group.drop-active {
+  border-color: rgba(53, 89, 230, 0.45);
+  box-shadow: 0 0 0 3px rgba(53, 89, 230, 0.14), var(--shadow-soft);
+}
+
 .group-head {
   display: flex;
   justify-content: space-between;
@@ -416,6 +432,16 @@ button.danger-ghost {
   padding: 10px 12px;
   border-top: 1px solid var(--line);
   animation: pop 0.22s ease;
+  cursor: grab;
+}
+
+.item:active {
+  cursor: grabbing;
+}
+
+body.dragging,
+body.dragging * {
+  cursor: grabbing !important;
 }
 
 @keyframes pop {
@@ -441,6 +467,10 @@ button.danger-ghost {
   font-size: 12px;
 }
 
+.drag-tip {
+  opacity: 0.7;
+}
+
 .item-desc-input {
   margin-top: 4px;
   width: min(460px, 100%);
@@ -449,6 +479,29 @@ button.danger-ghost {
   padding: 6px 8px;
   font-size: 13px;
   background: rgba(255, 255, 255, 0.75);
+}
+
+.item-desc-input.empty {
+  opacity: 0;
+  max-height: 0;
+  margin-top: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-width: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease, max-height 0.18s ease, margin-top 0.18s ease;
+}
+
+.item:hover .item-desc-input.empty,
+.item:focus .item-desc-input.empty,
+.item:focus-within .item-desc-input.empty {
+  opacity: 1;
+  max-height: 40px;
+  margin-top: 4px;
+  padding-top: 6px;
+  padding-bottom: 6px;
+  border-width: 1px;
+  pointer-events: auto;
 }
 
 .item-markers {
@@ -473,18 +526,6 @@ button.danger-ghost {
   transform: translateY(0);
 }
 
-.item-category-wrap {
-  margin-top: 6px;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.item-category-wrap span {
-  font-size: 12px;
-  color: var(--muted);
-}
-
 .marker-btn {
   border: 1px solid rgba(27, 39, 58, 0.16);
   border-radius: 999px;
@@ -495,17 +536,6 @@ button.danger-ghost {
   color: #3c455b;
   background: rgba(255, 255, 255, 0.9);
   box-shadow: none;
-}
-
-.category-inline {
-  width: auto;
-  min-width: 120px;
-  border-radius: 999px;
-  padding: 4px 10px;
-  font-size: 12px;
-  font-weight: 700;
-  border: 1px solid rgba(27, 39, 58, 0.16);
-  background: rgba(255, 255, 255, 0.9);
 }
 
 .marker-btn:hover {
