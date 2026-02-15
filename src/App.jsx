@@ -4,7 +4,15 @@ const TOKEN_KEY = "trailpack.auth.token.v1";
 const LIST_KEY = "trailpack.active.list.v1";
 const API_BASE = import.meta.env.VITE_API_BASE || "";
 const CUSTOM_CATEGORY_VALUE = "__custom__";
-const UNCATEGORIZED = "未分类";
+const DEFAULT_CATEGORY = "默认分类";
+const LEGACY_UNCATEGORIZED = "未分类";
+
+function normalizeCategoryName(category) {
+  const text = String(category || "").trim();
+  if (!text) return DEFAULT_CATEGORY;
+  if (text === LEGACY_UNCATEGORIZED) return DEFAULT_CATEGORY;
+  return text;
+}
 
 async function api(path, options = {}, token) {
   const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
@@ -38,8 +46,9 @@ function carriedItemTotal(item) {
 
 function groupByCategory(items) {
   return items.reduce((acc, item) => {
-    if (!acc[item.category]) acc[item.category] = [];
-    acc[item.category].push(item);
+    const category = normalizeCategoryName(item.category);
+    if (!acc[category]) acc[category] = [];
+    acc[category].push(item);
     return acc;
   }, {});
 }
@@ -87,7 +96,14 @@ export default function App() {
     qty: "1",
   });
 
-  function beginDrag(payload) {
+  function beginDrag(e, payload) {
+    try {
+      e.dataTransfer.setData("application/x-trailpack", JSON.stringify(payload));
+      e.dataTransfer.setData("text/plain", JSON.stringify(payload));
+      e.dataTransfer.effectAllowed = "move";
+    } catch {
+      // ignore: fallback to in-memory payload only
+    }
     setDragPayload(payload);
     document.body.classList.add("dragging");
   }
@@ -96,6 +112,22 @@ export default function App() {
     setDragPayload(null);
     setDragOverCategory("");
     document.body.classList.remove("dragging");
+  }
+
+  function resolveDragPayload(e) {
+    if (dragPayload) return dragPayload;
+    try {
+      const raw =
+        e.dataTransfer.getData("application/x-trailpack") ||
+        e.dataTransfer.getData("text/plain") ||
+        "";
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || !parsed.kind || !parsed.id) return null;
+      return parsed;
+    } catch {
+      return null;
+    }
   }
 
   function openConfirmDialog(config) {
@@ -141,22 +173,37 @@ export default function App() {
   }, [lists, activeListId]);
 
   const categoryOptions = useMemo(() => {
-    const merged = new Set([UNCATEGORIZED]);
+    const merged = new Set();
     for (const category of categoryCatalog) {
-      const text = String(category || "").trim();
+      const text = normalizeCategoryName(category);
       if (text) merged.add(text);
     }
     for (const item of items) {
-      const category = String(item.category || "").trim();
+      const category = normalizeCategoryName(item.category);
       if (category) merged.add(category);
     }
+    if (!merged.size) merged.add(DEFAULT_CATEGORY);
     return Array.from(merged);
   }, [categoryCatalog, items]);
+
+  const visibleCategories = useMemo(() => {
+    const merged = [...(categoryCatalog || []), ...Object.keys(grouped)];
+    const seen = new Set();
+    const result = [];
+    for (const raw of merged) {
+      const cat = normalizeCategoryName(raw);
+      if (!cat || seen.has(cat)) continue;
+      seen.add(cat);
+      result.push(cat);
+    }
+    if (!result.length) result.push(DEFAULT_CATEGORY);
+    return result;
+  }, [categoryCatalog, grouped]);
 
   async function refreshCategories(authToken = token) {
     if (!authToken) return;
     const data = await api("/api/categories", {}, authToken);
-    setCategoryCatalog(data.categories || []);
+    setCategoryCatalog((prev) => Array.from(new Set([...(prev || []), ...(data.categories || [])])));
   }
 
   async function refreshGears(listId = activeListId, authToken = token) {
@@ -511,7 +558,7 @@ export default function App() {
             listId: activeListId,
             name,
             description,
-            category: UNCATEGORIZED,
+            category: visibleCategories[0] || DEFAULT_CATEGORY,
             weight,
             qty,
           }),
@@ -621,30 +668,49 @@ export default function App() {
   }
 
   async function onRenameCategory(category, nextRawValue) {
-    const nextCategory = String(nextRawValue || "").trim().slice(0, 20);
-    if (!nextCategory || nextCategory === category) return;
+    const currentCategory = normalizeCategoryName(category);
+    const nextCategory = normalizeCategoryName(String(nextRawValue || "").trim().slice(0, 20));
+    if (!nextCategory || nextCategory === currentCategory) return;
 
-    const targets = items.filter((it) => it.category === category);
-    if (!targets.length) return;
+    const exists = visibleCategories.some(
+      (cat) => normalizeCategoryName(cat) === nextCategory && normalizeCategoryName(cat) !== currentCategory
+    );
+    if (exists) {
+      setAppError("该分类名称已存在，请换一个名称");
+      return;
+    }
+
+    const targets = items.filter(
+      (it) => normalizeCategoryName(it.category) === currentCategory
+    );
 
     setAppError("");
     setCategoryEditPending(true);
     try {
-      await Promise.all(
-        targets.map((it) =>
-          api(
-            `/api/items/${it.id}`,
-            {
-              method: "PATCH",
-              body: JSON.stringify({ category: nextCategory }),
-            },
-            token
+      if (targets.length) {
+        await Promise.all(
+          targets.map((it) =>
+            api(
+              `/api/items/${it.id}`,
+              {
+                method: "PATCH",
+                body: JSON.stringify({ category: nextCategory }),
+              },
+              token
+            )
           )
-        )
-      );
-      await fetchItemsForList(activeListId);
-      await refreshCategories();
-      await refreshGears(activeListId);
+        );
+        await fetchItemsForList(activeListId);
+        await refreshCategories();
+        await refreshGears(activeListId);
+      }
+      setCategoryCatalog((prev) => {
+        const base = (prev || []).map((cat) =>
+          normalizeCategoryName(cat) === currentCategory ? nextCategory : normalizeCategoryName(cat)
+        );
+        if (!base.includes(nextCategory)) base.push(nextCategory);
+        return Array.from(new Set(base));
+      });
     } catch (err) {
       setAppError(err.message || "重命名分类失败");
     } finally {
@@ -655,29 +721,43 @@ export default function App() {
   }
 
   async function doDeleteCategory(category) {
-    if (!category || category === UNCATEGORIZED) return;
-    const targets = items.filter((it) => it.category === category);
-    if (!targets.length) return;
+    if (!category) return;
+    const targets = items.filter(
+      (it) => normalizeCategoryName(it.category) === normalizeCategoryName(category)
+    );
+    const otherCategories = visibleCategories.filter((cat) => cat !== normalizeCategoryName(category));
+    const fallbackCategory =
+      otherCategories[0] || (normalizeCategoryName(category) === DEFAULT_CATEGORY ? "新分类" : DEFAULT_CATEGORY);
 
     setAppError("");
     setCategoryEditPending(true);
     try {
-      await Promise.all(
-        targets.map((it) =>
-          api(
-            `/api/items/${it.id}`,
-            {
-              method: "PATCH",
-              body: JSON.stringify({ category: UNCATEGORIZED }),
-            },
-            token
+      if (targets.length) {
+        await Promise.all(
+          targets.map((it) =>
+            api(
+              `/api/items/${it.id}`,
+              {
+                method: "PATCH",
+                body: JSON.stringify({ category: fallbackCategory }),
+              },
+              token
+            )
           )
-        )
-      );
-      setCategoryCatalog((prev) => prev.filter((cat) => cat !== category));
-      await fetchItemsForList(activeListId);
-      await refreshCategories();
-      await refreshGears(activeListId);
+        );
+      }
+      setCategoryCatalog((prev) => {
+        const next = (prev || [])
+          .map((cat) => normalizeCategoryName(cat))
+          .filter((cat) => cat !== normalizeCategoryName(category));
+        if (targets.length && !next.includes(fallbackCategory)) next.push(fallbackCategory);
+        return Array.from(new Set(next));
+      });
+      if (targets.length) {
+        await fetchItemsForList(activeListId);
+        await refreshCategories();
+        await refreshGears(activeListId);
+      }
     } catch (err) {
       setAppError(err.message || "删除分类失败");
     } finally {
@@ -688,10 +768,10 @@ export default function App() {
   }
 
   function onDeleteCategory(category) {
-    if (!category || category === UNCATEGORIZED) return;
+    if (!category) return;
     openConfirmDialog({
       title: "删除分类？",
-      message: `将「${category}」下装备移动到「${UNCATEGORIZED}」`,
+      message: `将删除分类「${category}」并保留其装备`,
       confirmText: "删除分类",
       onConfirm: async () => doDeleteCategory(category),
     });
@@ -714,8 +794,18 @@ export default function App() {
       confirmText: "添加",
       initialValue: "",
       onSubmit: async (value) => {
-        const next = value.slice(0, 20);
-        setCategoryCatalog((prev) => (prev.includes(next) ? prev : [...prev, next]));
+        const next = normalizeCategoryName(String(value || "").trim().slice(0, 20));
+        if (!next) {
+          setAppError("分类名称不能为空");
+          return;
+        }
+        const exists = visibleCategories.includes(next);
+        if (exists) {
+          setAppError("该分类已存在");
+          return;
+        }
+        setAppError("");
+        setCategoryCatalog((prev) => [...(prev || []), next]);
       },
     });
   }
@@ -1067,7 +1157,7 @@ export default function App() {
                     className="gear-item"
                     key={gear.id}
                     draggable
-                    onDragStart={() => beginDrag({ kind: "gear", id: gear.id })}
+                    onDragStart={(e) => beginDrag(e, { kind: "gear", id: gear.id })}
                     onDragEnd={finishDrag}
                   >
                     <div>
@@ -1097,14 +1187,15 @@ export default function App() {
             <div className="panel-head">
               <h2>装备清单</h2>
               <div className="panel-actions">
-                <button type="button" className="ghost" onClick={onAddCategoryOnly}>添加新列表</button>
+                <button type="button" className="ghost" onClick={onAddCategoryOnly}>添加新分类</button>
                 <button type="button" className="ghost" onClick={clearAll}>清空当前清单</button>
               </div>
             </div>
 
             <div className="groups">
-              {!items.length && <p className="empty">当前清单还没有装备，先添加一件试试。</p>}
-              {Object.entries(grouped).map(([category, list]) => {
+              {!items.length && !categoryCatalog.length && <p className="empty">当前清单还没有装备，先添加一件试试。</p>}
+              {visibleCategories.map((category) => {
+                const list = grouped[category] || [];
                 const total = list.reduce((sum, item) => sum + carriedItemTotal(item), 0);
                 return (
                   <section
@@ -1112,18 +1203,20 @@ export default function App() {
                     key={category}
                     onDragOver={(e) => {
                       e.preventDefault();
-                      if (dragPayload) setDragOverCategory(category);
+                      const payload = resolveDragPayload(e);
+                      if (payload) setDragOverCategory(category);
                     }}
                     onDragLeave={() => {
                       if (dragOverCategory === category) setDragOverCategory("");
                     }}
                     onDrop={async (e) => {
                       e.preventDefault();
-                      if (!dragPayload) return;
-                      if (dragPayload.kind === "item") {
-                        await onDropItemToCategory(dragPayload.id, category);
-                      } else if (dragPayload.kind === "gear") {
-                        await onDropGearToCategory(dragPayload.id, category);
+                      const payload = resolveDragPayload(e);
+                      if (!payload) return;
+                      if (payload.kind === "item") {
+                        await onDropItemToCategory(payload.id, category);
+                      } else if (payload.kind === "gear") {
+                        await onDropGearToCategory(payload.id, category);
                       }
                       finishDrag();
                     }}
@@ -1176,29 +1269,28 @@ export default function App() {
                             >
                               ✎
                             </button>
-                            {category !== UNCATEGORIZED && (
-                              <button
-                                type="button"
-                                className="group-edit-btn group-delete-btn"
-                                title="删除分类"
-                                onClick={() => onDeleteCategory(category)}
-                                disabled={categoryEditPending}
-                              >
-                                🗑
-                              </button>
-                            )}
+                            <button
+                              type="button"
+                              className="group-edit-btn group-delete-btn"
+                              title="删除分类"
+                              onClick={() => onDeleteCategory(category)}
+                              disabled={categoryEditPending}
+                            >
+                              🗑
+                            </button>
                           </>
                         )}
                       </div>
                       <span>{formatG(total)}</span>
                     </div>
+                    {!list.length && <p className="empty">空分类，拖动装备到这里</p>}
                     {list.map((item) => (
                       <article
                         className="item"
                         key={item.id}
                         tabIndex={0}
                         draggable
-                        onDragStart={() => beginDrag({ kind: "item", id: item.id })}
+                        onDragStart={(e) => beginDrag(e, { kind: "item", id: item.id })}
                         onDragEnd={finishDrag}
                       >
                         <div>
