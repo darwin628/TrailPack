@@ -342,6 +342,11 @@ button.danger-ghost {
   margin-bottom: 8px;
 }
 
+.panel-actions {
+  display: flex;
+  gap: 8px;
+}
+
 .groups {
   display: grid;
   gap: 12px;
@@ -358,10 +363,50 @@ button.danger-ghost {
 .group-head {
   display: flex;
   justify-content: space-between;
+  align-items: center;
   padding: 11px 12px;
   border-bottom: 1px solid var(--line);
   background: linear-gradient(145deg, rgba(240, 244, 255, 0.9), rgba(255, 245, 240, 0.7));
   font-weight: 700;
+}
+
+.group-title-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.group-title-edit {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.group-title-edit input {
+  width: 150px;
+  padding: 5px 8px;
+  border-radius: 9px;
+  font-size: 13px;
+}
+
+.group-edit-btn {
+  border: 1px solid rgba(27, 39, 58, 0.18);
+  border-radius: 999px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: rgba(255, 255, 255, 0.88);
+  color: #44506b;
+  font-size: 13px;
+  line-height: 1;
+  box-shadow: none;
+}
+
+.group-edit-btn:hover {
+  transform: none;
+  box-shadow: none;
+  filter: none;
+  background: rgba(240, 244, 255, 0.95);
 }
 
 .item {

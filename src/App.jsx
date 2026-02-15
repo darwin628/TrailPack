@@ -70,6 +70,9 @@ export default function App() {
   const [itemWeightPendingId, setItemWeightPendingId] = useState(0);
   const [editingWeightItemId, setEditingWeightItemId] = useState(0);
   const [weightDrafts, setWeightDrafts] = useState({});
+  const [categoryEditPending, setCategoryEditPending] = useState(false);
+  const [editingCategoryName, setEditingCategoryName] = useState("");
+  const [editingCategoryValue, setEditingCategoryValue] = useState("");
   const [appError, setAppError] = useState("");
 
   const [form, setForm] = useState({
@@ -536,6 +539,58 @@ export default function App() {
     await onChangeItemCategory(item, category);
   }
 
+  async function onRenameCategory(category, nextRawValue) {
+    const nextCategory = String(nextRawValue || "").trim().slice(0, 20);
+    if (!nextCategory || nextCategory === category) return;
+
+    const targets = items.filter((it) => it.category === category);
+    if (!targets.length) return;
+
+    setAppError("");
+    setCategoryEditPending(true);
+    try {
+      await Promise.all(
+        targets.map((it) =>
+          api(
+            `/api/items/${it.id}`,
+            {
+              method: "PATCH",
+              body: JSON.stringify({ category: nextCategory }),
+            },
+            token
+          )
+        )
+      );
+      await fetchItemsForList(activeListId);
+      await refreshCategories();
+      await refreshGears(activeListId);
+    } catch (err) {
+      setAppError(err.message || "重命名分类失败");
+    } finally {
+      setCategoryEditPending(false);
+      setEditingCategoryName("");
+      setEditingCategoryValue("");
+    }
+  }
+
+  function onStartRenameCategory(category) {
+    setEditingCategoryName(category);
+    setEditingCategoryValue(category);
+  }
+
+  function onCancelRenameCategory() {
+    setEditingCategoryName("");
+    setEditingCategoryValue("");
+  }
+
+  function onAddCategoryOnly() {
+    const input = window.prompt("输入新分类名称", "");
+    if (input === null) return;
+    const next = input.trim().slice(0, 20);
+    if (!next) return;
+    setCategoryCatalog((prev) => (prev.includes(next) ? prev : [...prev, next]));
+  }
+
   async function onSaveItemDescription(item, value) {
     if (!item?.id) return;
     const description = String(value || "").trim().slice(0, 80);
@@ -894,7 +949,10 @@ export default function App() {
           <section className="right-panel card">
             <div className="panel-head">
               <h2>装备清单</h2>
-              <button type="button" className="ghost" onClick={clearAll}>清空当前清单</button>
+              <div className="panel-actions">
+                <button type="button" className="ghost" onClick={onAddCategoryOnly}>添加新列表</button>
+                <button type="button" className="ghost" onClick={clearAll}>清空当前清单</button>
+              </div>
             </div>
 
             <div className="groups">
@@ -904,7 +962,56 @@ export default function App() {
                 return (
                   <section className="group" key={category}>
                     <div className="group-head">
-                      <span>{category}</span>
+                      <div className="group-title-wrap">
+                        {editingCategoryName === category ? (
+                          <div className="group-title-edit">
+                            <input
+                              value={editingCategoryValue}
+                              maxLength={20}
+                              onChange={(e) => setEditingCategoryValue(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") {
+                                  e.preventDefault();
+                                  onRenameCategory(category, editingCategoryValue);
+                                }
+                                if (e.key === "Escape") onCancelRenameCategory();
+                              }}
+                              autoFocus
+                            />
+                            <button
+                              type="button"
+                              className="group-edit-btn"
+                              title="保存"
+                              onClick={() => onRenameCategory(category, editingCategoryValue)}
+                              disabled={categoryEditPending}
+                            >
+                              ✓
+                            </button>
+                            <button
+                              type="button"
+                              className="group-edit-btn"
+                              title="取消"
+                              onClick={onCancelRenameCategory}
+                              disabled={categoryEditPending}
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        ) : (
+                          <>
+                            <span>{category}</span>
+                            <button
+                              type="button"
+                              className="group-edit-btn"
+                              title="重命名分类"
+                              onClick={() => onStartRenameCategory(category)}
+                              disabled={categoryEditPending}
+                            >
+                              ✎
+                            </button>
+                          </>
+                        )}
+                      </div>
                       <span>{formatG(total)}</span>
                     </div>
                     {list.map((item) => (
