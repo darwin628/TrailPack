@@ -1267,7 +1267,16 @@ export default function App() {
                               onClick={() => onStartRenameCategory(category)}
                               disabled={categoryEditPending}
                             >
-                              ✎
+                              <svg viewBox="0 0 24 24" aria-hidden="true">
+                                <path
+                                  d="M4 20h4l10-10a2.2 2.2 0 0 0-4-4L4 16v4z"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="1.8"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                />
+                              </svg>
                             </button>
                             <button
                               type="button"
@@ -1276,7 +1285,23 @@ export default function App() {
                               onClick={() => onDeleteCategory(category)}
                               disabled={categoryEditPending}
                             >
-                              🗑
+                              <svg viewBox="0 0 24 24" aria-hidden="true">
+                                <path
+                                  d="M4 7h16M9 7V5h6v2m-9 0 1 12h10l1-12"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="1.8"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                />
+                                <path
+                                  d="M10 11v5M14 11v5"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="1.8"
+                                  strokeLinecap="round"
+                                />
+                              </svg>
                             </button>
                           </>
                         )}

@@ -421,12 +421,20 @@ button.danger-ghost {
   border-radius: 999px;
   width: 24px;
   height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   padding: 0;
   background: rgba(255, 255, 255, 0.88);
   color: #44506b;
   font-size: 13px;
   line-height: 1;
   box-shadow: none;
+}
+
+.group-edit-btn svg {
+  width: 14px;
+  height: 14px;
 }
 
 .group-edit-btn:hover {
@@ -449,6 +457,7 @@ button.danger-ghost {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
   padding: 10px 12px;
   border-top: 1px solid var(--line);
   animation: pop 0.22s ease;
@@ -491,14 +500,44 @@ body.dragging * {
   opacity: 0.7;
 }
 
+.gear-item .drag-tip {
+  opacity: 0;
+  max-height: 0;
+  margin-top: 0;
+  overflow: hidden;
+  transition: opacity 0.18s ease, max-height 0.18s ease, margin-top 0.18s ease;
+}
+
+.gear-item:hover .drag-tip,
+.gear-item:focus-within .drag-tip {
+  opacity: 0.7;
+  max-height: 28px;
+  margin-top: 3px;
+}
+
+@media (hover: none) {
+  .gear-item .drag-tip {
+    opacity: 0.7;
+    max-height: 28px;
+    margin-top: 3px;
+  }
+}
+
 .item-desc-input {
   margin-top: 4px;
-  width: min(460px, 100%);
+  display: block;
+  width: 100%;
+  max-width: 460px;
   border: 1px dashed rgba(27, 39, 58, 0.22);
   border-radius: 10px;
   padding: 6px 8px;
   font-size: 13px;
   background: rgba(255, 255, 255, 0.75);
+}
+
+.item > div:first-child {
+  flex: 1;
+  min-width: 0;
 }
 
 .item-desc-input.empty {
@@ -580,6 +619,7 @@ body.dragging * {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex-shrink: 0;
 }
 
 .item-weight-edit {
