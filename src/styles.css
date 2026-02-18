@@ -515,8 +515,30 @@ body.dragging * {
   margin-top: 3px;
 }
 
+.item .drag-tip {
+  opacity: 0;
+  max-height: 0;
+  margin-top: 0;
+  overflow: hidden;
+  transition: opacity 0.18s ease, max-height 0.18s ease, margin-top 0.18s ease;
+}
+
+.item:hover .drag-tip,
+.item:focus .drag-tip,
+.item:focus-within .drag-tip {
+  opacity: 0.7;
+  max-height: 28px;
+  margin-top: 3px;
+}
+
 @media (hover: none) {
   .gear-item .drag-tip {
+    opacity: 0.7;
+    max-height: 28px;
+    margin-top: 3px;
+  }
+
+  .item .drag-tip {
     opacity: 0.7;
     max-height: 28px;
     margin-top: 3px;
