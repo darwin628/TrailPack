@@ -77,8 +77,11 @@ export default function App() {
   const [listPending, setListPending] = useState(false);
   const [itemTypePendingId, setItemTypePendingId] = useState(0);
   const [itemWeightPendingId, setItemWeightPendingId] = useState(0);
+  const [itemQtyPendingId, setItemQtyPendingId] = useState(0);
   const [editingWeightItemId, setEditingWeightItemId] = useState(0);
+  const [editingQtyItemId, setEditingQtyItemId] = useState(0);
   const [weightDrafts, setWeightDrafts] = useState({});
+  const [qtyDrafts, setQtyDrafts] = useState({});
   const [dragPayload, setDragPayload] = useState(null);
   const [dragOverCategory, setDragOverCategory] = useState("");
   const [categoryEditPending, setCategoryEditPending] = useState(false);
@@ -93,7 +96,6 @@ export default function App() {
     name: "",
     description: "",
     weight: "",
-    qty: "1",
   });
 
   function beginDrag(e, payload) {
@@ -544,10 +546,9 @@ export default function App() {
     }
 
     const weight = Number(form.weight);
-    const qty = Number(form.qty);
     const name = form.name.trim();
     const description = String(form.description || "").trim().slice(0, 80);
-    if (!name || weight <= 0 || qty <= 0) return;
+    if (!name || weight <= 0) return;
 
     try {
       const data = await api(
@@ -560,7 +561,7 @@ export default function App() {
             description,
             category: visibleCategories[0] || DEFAULT_CATEGORY,
             weight,
-            qty,
+            qty: 1,
           }),
         },
         token
@@ -568,7 +569,7 @@ export default function App() {
       setItems((prev) => [data.item, ...prev]);
       await refreshCategories();
       await refreshGears();
-      setForm((prev) => ({ ...prev, name: "", description: "", weight: "", qty: "1" }));
+      setForm((prev) => ({ ...prev, name: "", description: "", weight: "" }));
     } catch (err) {
       setAppError(err.message || "添加失败");
     }
@@ -837,6 +838,59 @@ export default function App() {
     return String(draft);
   }
 
+  function getQtyDraft(item) {
+    const draft = qtyDrafts[item.id];
+    if (draft === undefined || draft === null || draft === "") return String(item.qty);
+    return String(draft);
+  }
+
+  function onStartEditItemQty(item) {
+    setQtyDrafts((prev) => ({ ...prev, [item.id]: String(item.qty) }));
+    setEditingQtyItemId(item.id);
+  }
+
+  async function onSaveItemQty(item) {
+    const nextQty = Math.round(Number(getQtyDraft(item)));
+    if (!Number.isFinite(nextQty) || nextQty <= 0) {
+      setAppError("数量必须大于 0");
+      return;
+    }
+    if (nextQty === Number(item.qty)) {
+      setEditingQtyItemId(0);
+      setQtyDrafts((prev) => {
+        const next = { ...prev };
+        delete next[item.id];
+        return next;
+      });
+      return;
+    }
+
+    setAppError("");
+    setItemQtyPendingId(item.id);
+    try {
+      await api(
+        `/api/items/${item.id}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ qty: nextQty }),
+        },
+        token
+      );
+      await fetchItemsForList(activeListId);
+      await refreshGears(activeListId);
+      setQtyDrafts((prev) => {
+        const next = { ...prev };
+        delete next[item.id];
+        return next;
+      });
+    } catch (err) {
+      setAppError(err.message || "更新数量失败");
+    } finally {
+      setItemQtyPendingId(0);
+      setEditingQtyItemId(0);
+    }
+  }
+
   function onStartEditItemWeight(item) {
     setWeightDrafts((prev) => ({ ...prev, [item.id]: String(item.weight) }));
     setEditingWeightItemId(item.id);
@@ -892,7 +946,7 @@ export default function App() {
         `/api/gears/${gear.id}/add-to-list`,
         {
           method: "POST",
-          body: JSON.stringify({ listId: activeListId, qty: gear.defaultQty }),
+          body: JSON.stringify({ listId: activeListId, qty: 1 }),
         },
         token
       )).item;
@@ -1123,16 +1177,10 @@ export default function App() {
                 />
               </label>
 
-              <div className="row">
-                <label>
-                  单件重量(g)
-                  <input type="number" min="1" step="1" required value={form.weight} onChange={(e) => setForm((prev) => ({ ...prev, weight: e.target.value }))} />
-                </label>
-                <label>
-                  数量
-                  <input type="number" min="1" step="1" required value={form.qty} onChange={(e) => setForm((prev) => ({ ...prev, qty: e.target.value }))} />
-                </label>
-              </div>
+              <label>
+                单件重量(g)
+                <input type="number" min="1" step="1" required value={form.weight} onChange={(e) => setForm((prev) => ({ ...prev, weight: e.target.value }))} />
+              </label>
 
               <button type="submit" disabled={!activeListId}>添加到当前清单</button>
             </form>
@@ -1164,7 +1212,7 @@ export default function App() {
                       <p className="item-name">{gear.name}</p>
                       <p className="item-meta">
                         {gear.description ? `${gear.description} · ` : ""}
-                        {gear.defaultQty} x {gear.weight}g
+                        {gear.weight}g
                       </p>
                       <p className="item-meta drag-tip">拖动到右侧目标分类可加入清单</p>
                     </div>
@@ -1319,7 +1367,31 @@ export default function App() {
                         onDragEnd={finishDrag}
                       >
                         <div>
-                          <p className="item-name">{item.name}</p>
+                          <div className="item-name-row">
+                            <p className="item-name">{item.name}</p>
+                            <button
+                              type="button"
+                              className={`worn-toggle-btn ${item.type === "worn" ? "active" : ""}`}
+                              onClick={() => onToggleItemType(item, item.type === "worn" ? "base" : "worn")}
+                              disabled={itemTypePendingId === item.id}
+                              title={item.type === "worn" ? "取消穿戴（计入总重）" : "设为穿戴（不计入总重）"}
+                              aria-label={item.type === "worn" ? "取消穿戴（计入总重）" : "设为穿戴（不计入总重）"}
+                            >
+                              <span className="sr-only">
+                                {item.type === "worn" ? "取消穿戴（计入总重）" : "设为穿戴（不计入总重）"}
+                              </span>
+                              <svg viewBox="0 0 24 24" aria-hidden="true">
+                                <path
+                                  d="M8 5.5 12 3l4 2.5 2.5 1.5-1.3 3.2-2.2-1.2V20H8.9V9L6.7 10.2 5.4 7z"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="1.8"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                />
+                              </svg>
+                            </button>
+                          </div>
                           <input
                             className={`item-desc-input ${item.description ? "filled" : "empty"}`}
                             value={item.description || ""}
@@ -1338,30 +1410,41 @@ export default function App() {
                               }
                             }}
                           />
-                          <p className="item-meta">数量: {item.qty}</p>
                           <p className="item-meta drag-tip">拖动到目标分类即可归类</p>
-                          <div className="item-markers">
-                            <button
-                              type="button"
-                              className={`marker-btn ${item.type === "worn" ? "active worn" : ""}`}
-                              onClick={() => onToggleItemType(item, item.type === "worn" ? "base" : "worn")}
-                              disabled={itemTypePendingId === item.id}
-                            >
-                              穿戴
-                            </button>
-                            <button
-                              type="button"
-                              className={`marker-btn ${item.type === "consumable" ? "active consumable" : ""}`}
-                              onClick={() =>
-                                onToggleItemType(item, item.type === "consumable" ? "base" : "consumable")
-                              }
-                              disabled={itemTypePendingId === item.id}
-                            >
-                              消耗品
-                            </button>
-                          </div>
                         </div>
                         <div className="item-right">
+                          <div className="item-weight-edit">
+                            {editingQtyItemId === item.id ? (
+                              <input
+                                type="number"
+                                min="1"
+                                step="1"
+                                value={getQtyDraft(item)}
+                                onChange={(e) =>
+                                  setQtyDrafts((prev) => ({ ...prev, [item.id]: e.target.value }))
+                                }
+                                onBlur={() => onSaveItemQty(item)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") {
+                                    e.preventDefault();
+                                    onSaveItemQty(item);
+                                  }
+                                }}
+                                autoFocus
+                                disabled={itemQtyPendingId === item.id}
+                              />
+                            ) : (
+                              <button
+                                type="button"
+                                className="weight-trigger"
+                                onClick={() => onStartEditItemQty(item)}
+                                disabled={itemQtyPendingId === item.id}
+                                title="点击修改数量"
+                              >
+                                x{item.qty}
+                              </button>
+                            )}
+                          </div>
                           <div className="item-weight-edit">
                             {editingWeightItemId === item.id ? (
                               <>
@@ -1397,7 +1480,6 @@ export default function App() {
                               </button>
                             )}
                           </div>
-                          {item.type === "worn" && <strong className="item-weight">不计入总重</strong>}
                           <button type="button" className="delete-btn" onClick={() => removeItem(item.id)} title="删除">✕</button>
                         </div>
                       </article>
