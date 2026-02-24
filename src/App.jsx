@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import clothIcon from "./assets/cloth-icon.svg";
 
 const TOKEN_KEY = "trailpack.auth.token.v1";
 const LIST_KEY = "trailpack.active.list.v1";
@@ -1042,6 +1043,7 @@ export default function App() {
                 <button type="submit" disabled={authPending}>
                   {authPending ? "处理中..." : authMode === "login" ? "登录" : "创建账号"}
                 </button>
+
               </form>
             )}
 
@@ -1371,7 +1373,7 @@ export default function App() {
                             <p className="item-name">{item.name}</p>
                             <button
                               type="button"
-                              className={`worn-toggle-btn ${item.type === "worn" ? "active" : ""}`}
+                              className={`worn-toggle-btn ${item.type === "worn" ? "active" : "peek"}`}
                               onClick={() => onToggleItemType(item, item.type === "worn" ? "base" : "worn")}
                               disabled={itemTypePendingId === item.id}
                               title={item.type === "worn" ? "取消穿戴（计入总重）" : "设为穿戴（不计入总重）"}
@@ -1380,16 +1382,7 @@ export default function App() {
                               <span className="sr-only">
                                 {item.type === "worn" ? "取消穿戴（计入总重）" : "设为穿戴（不计入总重）"}
                               </span>
-                              <svg viewBox="0 0 24 24" aria-hidden="true">
-                                <path
-                                  d="M8 5.5 12 3l4 2.5 2.5 1.5-1.3 3.2-2.2-1.2V20H8.9V9L6.7 10.2 5.4 7z"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  strokeWidth="1.8"
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                />
-                              </svg>
+                              <img src={clothIcon} alt="" aria-hidden="true" />
                             </button>
                           </div>
                           <input

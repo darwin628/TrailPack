@@ -518,9 +518,24 @@ body.dragging * {
 }
 
 .worn-toggle-btn.active {
-  color: #2f4fc2;
-  background: rgba(53, 89, 230, 0.12);
-  border-color: rgba(53, 89, 230, 0.32);
+  color: #1f8a4d;
+  background: rgba(31, 138, 77, 0.14);
+  border-color: rgba(31, 138, 77, 0.34);
+}
+
+.worn-toggle-btn.peek {
+  opacity: 0;
+  transform: scale(0.9);
+  pointer-events: none;
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+
+.item:hover .worn-toggle-btn.peek,
+.item:focus .worn-toggle-btn.peek,
+.item:focus-within .worn-toggle-btn.peek {
+  opacity: 1;
+  transform: scale(1);
+  pointer-events: auto;
 }
 
 .worn-toggle-btn:disabled {
@@ -528,9 +543,19 @@ body.dragging * {
   cursor: not-allowed;
 }
 
-.worn-toggle-btn svg {
+.worn-toggle-btn svg,
+.worn-toggle-btn img {
   width: 12px;
   height: 12px;
+  display: block;
+}
+
+.worn-toggle-btn img {
+  filter: grayscale(1) saturate(0) brightness(0.72);
+}
+
+.worn-toggle-btn.active img {
+  filter: none;
 }
 
 .sr-only {
