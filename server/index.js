@@ -27,7 +27,7 @@ const defaultSeedItems = [
   { name: "冲锋衣", category: "衣物", type: "worn", weight: 460, qty: 1 },
   { name: "炉头+气罐", category: "炊具", type: "base", weight: 380, qty: 1 },
   { name: "头灯", category: "电子设备", type: "base", weight: 95, qty: 1 },
-  { name: "能量胶", category: "其他", type: "consumable", weight: 45, qty: 6 },
+  { name: "能量胶", category: "其他", type: "base", weight: 45, qty: 6 },
 ];
 
 function hashResetCode(code) {
@@ -441,6 +441,27 @@ async function createPostgresDb() {
       return updated.rows[0] || null;
     },
 
+    updateItemQtyAndSync: async (id, userId, qty) => {
+      const current = await pool.query(
+        "SELECT id, name, description, category, type, weight, qty FROM items WHERE id = $1 AND user_id = $2 LIMIT 1",
+        [id, userId]
+      );
+      const item = current.rows[0];
+      if (!item) return null;
+
+      await pool.query("UPDATE items SET qty = $1 WHERE id = $2 AND user_id = $3", [qty, id, userId]);
+      await pool.query(
+        "UPDATE gear_library SET default_qty = $1 WHERE user_id = $2 AND name = $3 AND category = $4 AND type = $5 AND weight = $6",
+        [qty, userId, item.name, item.category, item.type, item.weight]
+      );
+
+      const updated = await pool.query(
+        "SELECT id, name, description, category, type, weight, qty FROM items WHERE id = $1 AND user_id = $2 LIMIT 1",
+        [id, userId]
+      );
+      return updated.rows[0] || null;
+    },
+
     deleteItem: async (id, userId) => {
       const result = await pool.query("DELETE FROM items WHERE id = $1 AND user_id = $2", [id, userId]);
       return result.rowCount;
@@ -825,6 +846,24 @@ function createSqliteDb() {
         .get(id, userId);
     },
 
+    updateItemQtyAndSync: async (id, userId, qty) => {
+      const item = sqlite
+        .prepare("SELECT id, name, description, category, type, weight, qty FROM items WHERE id = ? AND user_id = ?")
+        .get(id, userId);
+      if (!item) return null;
+
+      sqlite.prepare("UPDATE items SET qty = ? WHERE id = ? AND user_id = ?").run(qty, id, userId);
+      sqlite
+        .prepare(
+          "UPDATE gear_library SET default_qty = ? WHERE user_id = ? AND name = ? AND category = ? AND type = ? AND weight = ?"
+        )
+        .run(qty, userId, item.name, item.category, item.type, item.weight);
+
+      return sqlite
+        .prepare("SELECT id, name, description, category, type, weight, qty FROM items WHERE id = ? AND user_id = ?")
+        .get(id, userId);
+    },
+
     deleteItem: async (id, userId) => {
       const result = sqlite.prepare("DELETE FROM items WHERE id = ? AND user_id = ?").run(id, userId);
       return result.changes;
@@ -1051,7 +1090,7 @@ async function main() {
       const defaultQty = Number(req.body?.defaultQty || 1);
 
       if (!name || !category || !type) return res.status(400).json({ error: "请填写完整装备信息" });
-      if (!["base", "worn", "consumable"].includes(type)) return res.status(400).json({ error: "装备类型不正确" });
+      if (!["base", "worn"].includes(type)) return res.status(400).json({ error: "装备类型不正确" });
       if (!Number.isFinite(weight) || weight <= 0 || !Number.isFinite(defaultQty) || defaultQty <= 0) {
         return res.status(400).json({ error: "重量和数量必须大于 0" });
       }
@@ -1195,11 +1234,11 @@ async function main() {
       const category = String(req.body?.category || "未分类").trim();
       const type = String(req.body?.type || "base").trim();
       const weight = Number(req.body?.weight);
-      const qty = Number(req.body?.qty);
+      const qty = Number(req.body?.qty ?? 1);
 
       if (!Number.isInteger(listId) || listId <= 0) return res.status(400).json({ error: "请选择有效清单" });
       if (!name || !category || !type) return res.status(400).json({ error: "请填写完整装备信息" });
-      if (!["base", "worn", "consumable"].includes(type)) return res.status(400).json({ error: "装备类型不正确" });
+      if (!["base", "worn"].includes(type)) return res.status(400).json({ error: "装备类型不正确" });
       if (!Number.isFinite(weight) || !Number.isFinite(qty) || weight <= 0 || qty <= 0) {
         return res.status(400).json({ error: "重量和数量必须大于 0" });
       }
@@ -1252,9 +1291,10 @@ async function main() {
 
       const hasType = req.body && Object.prototype.hasOwnProperty.call(req.body, "type");
       const hasWeight = req.body && Object.prototype.hasOwnProperty.call(req.body, "weight");
+      const hasQty = req.body && Object.prototype.hasOwnProperty.call(req.body, "qty");
       const hasCategory = req.body && Object.prototype.hasOwnProperty.call(req.body, "category");
       const hasDescription = req.body && Object.prototype.hasOwnProperty.call(req.body, "description");
-      if (!hasType && !hasWeight && !hasCategory && !hasDescription) {
+      if (!hasType && !hasWeight && !hasQty && !hasCategory && !hasDescription) {
         return res.status(400).json({ error: "请提供需要更新的字段" });
       }
 
@@ -1264,7 +1304,7 @@ async function main() {
 
       if (hasType) {
         const type = String(req.body?.type || "").trim();
-        if (!["base", "worn", "consumable"].includes(type)) {
+        if (!["base", "worn"].includes(type)) {
           return res.status(400).json({ error: "装备类型不正确" });
         }
         item = await db.updateItemType(id, userId, type);
@@ -1277,6 +1317,14 @@ async function main() {
           return res.status(400).json({ error: "重量必须大于 0" });
         }
         item = await db.updateItemWeightAndSync(id, userId, weight);
+      }
+
+      if (hasQty) {
+        const qty = Math.round(Number(req.body?.qty));
+        if (!Number.isFinite(qty) || qty <= 0) {
+          return res.status(400).json({ error: "数量必须大于 0" });
+        }
+        item = await db.updateItemQtyAndSync(id, userId, qty);
       }
 
       if (hasCategory) {

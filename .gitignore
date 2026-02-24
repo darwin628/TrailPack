@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+node_modules_broken_*/
+
+# Build outputs
+dist/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Local databases and SQLite journals
+server/*.db
+server/*.db-*
+
+# OS/editor artifacts
+.DS_Store
+*.log
