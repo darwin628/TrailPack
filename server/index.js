@@ -288,6 +288,14 @@ async function createPostgresDb() {
       return rows[0];
     },
 
+    renamePackList: async (userId, listId, name) => {
+      const { rows } = await pool.query(
+        "UPDATE pack_lists SET name = $1 WHERE user_id = $2 AND id = $3 RETURNING id, name",
+        [name, userId, listId]
+      );
+      return rows[0] || null;
+    },
+
     clonePackList: async (userId, sourceListId, name) => {
       const client = await pool.connect();
       try {
@@ -704,6 +712,18 @@ function createSqliteDb() {
         .prepare("INSERT INTO pack_lists (user_id, name, destination) VALUES (?, ?, ?)")
         .run(userId, name, "");
       return { id: Number(result.lastInsertRowid), name };
+    },
+
+    renamePackList: async (userId, listId, name) => {
+      const result = sqlite
+        .prepare("UPDATE pack_lists SET name = ? WHERE user_id = ? AND id = ?")
+        .run(name, userId, listId);
+      if (!result.changes) return null;
+      return (
+        sqlite
+          .prepare("SELECT id, name FROM pack_lists WHERE user_id = ? AND id = ?")
+          .get(userId, listId) || null
+      );
     },
 
     clonePackList: async (userId, sourceListId, name) => {
@@ -1164,6 +1184,27 @@ async function main() {
       return res.status(201).json({ list, lists });
     } catch {
       return res.status(500).json({ error: "创建清单失败" });
+    }
+  });
+
+  app.patch("/api/lists/:id", authRequired, async (req, res) => {
+    try {
+      const userId = Number(req.user.sub);
+      const listId = Number(req.params.id);
+      if (!Number.isInteger(listId) || listId <= 0) {
+        return res.status(400).json({ error: "无效清单 id" });
+      }
+
+      const name = String(req.body?.name || "").trim().slice(0, 40);
+      if (!name) return res.status(400).json({ error: "清单名称不能为空" });
+
+      const list = await db.renamePackList(userId, listId, name);
+      if (!list) return res.status(404).json({ error: "清单不存在" });
+
+      const lists = await db.listPackLists(userId);
+      return res.json({ ok: true, list, lists });
+    } catch {
+      return res.status(500).json({ error: "重命名清单失败" });
     }
   });
 

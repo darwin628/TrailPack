@@ -524,6 +524,43 @@ export default function App() {
     });
   }
 
+  async function doRenameCurrentList(name) {
+    if (!activeListId) return;
+    if (!name) {
+      setAppError("清单名称不能为空");
+      return;
+    }
+
+    setAppError("");
+    setListPending(true);
+    try {
+      const data = await api(
+        `/api/lists/${activeListId}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ name }),
+        },
+        token
+      );
+      setLists(data.lists || []);
+    } catch (err) {
+      setAppError(err.message || "重命名清单失败");
+    } finally {
+      setListPending(false);
+    }
+  }
+
+  function onRenameCurrentList() {
+    if (!activeListId || !currentList) return;
+    openInputDialog({
+      title: "重命名当前清单",
+      label: "请输入新的清单名称",
+      confirmText: "确定",
+      initialValue: currentList.name || "",
+      onSubmit: doRenameCurrentList,
+    });
+  }
+
   function logout() {
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(LIST_KEY);
@@ -1133,6 +1170,7 @@ export default function App() {
               <p className="muted">切换和复制行程清单</p>
             </div>
             <div className="list-actions">
+              <button type="button" className="ghost" onClick={onRenameCurrentList} disabled={listPending || !activeListId}>重命名当前清单</button>
               <button type="button" className="ghost" onClick={onCloneCurrentList} disabled={listPending || !activeListId}>复制当前清单</button>
               <button type="button" className="ghost" onClick={onDeleteCurrentList} disabled={listPending || !activeListId}>删除当前清单</button>
             </div>
